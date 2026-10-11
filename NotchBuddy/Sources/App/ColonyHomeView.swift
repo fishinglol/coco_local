@@ -9,6 +9,8 @@ struct ColonyHomeView: View {
     @State private var integrationId: String?     // an integration pill (GitHub, Stripe…) the user opened
     @State private var showingDetail = false
     @State private var showTools = false
+    @State private var swipe: CGFloat = 0           // horizontal trackpad travel of the current two-finger swipe
+    @State private var swipeMonitor: Any?
 
     private var focus: ColonyAgent? { store.currentAgent ?? store.agents.first }
 
@@ -24,13 +26,35 @@ struct ColonyHomeView: View {
             }
             ZStack {
                 CardBackground(wash: nil)
-                rightCard.padding(10)
+                rightCard.padding(8)
             }
-            .frame(width: 300)
+            .frame(width: 320)
         }
         .padding(.bottom, 10)
         .task { await store.reload() }
         .task { await store.pollActivity(state: state) }
+        .onAppear { startSwipeMonitor() }
+        .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m); swipeMonitor = nil } }
+    }
+
+    private func setTools(_ on: Bool) {
+        withAnimation(.easeInOut(duration: 0.25)) { showTools = on }
+        if on { if let first = tools.first { state.setFocus(first.id); integrationId = first.id } }
+        else { integrationId = nil }
+    }
+
+    /// Two-finger swipe left/right on the trackpad flips between Team and Tools.
+    private func startSwipeMonitor() {
+        guard swipeMonitor == nil else { return }
+        swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { e in
+            if e.phase == .began { swipe = 0 }
+            if abs(e.scrollingDeltaX) > abs(e.scrollingDeltaY) {
+                swipe += e.scrollingDeltaX
+                if swipe < -40, !showTools { setTools(true); swipe = 0 }
+                else if swipe > 40, showTools { setTools(false); swipe = 0 }
+            }
+            return e
+        }
     }
 
     @ViewBuilder private var leftCard: some View {
@@ -80,13 +104,10 @@ struct ColonyHomeView: View {
 
     private var rightCard: some View {
         let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
-        return VStack(spacing: 6) {
+        return VStack(spacing: 4) {
             HStack(spacing: 14) {
-                tabButton("Team", on: !showTools) { showTools = false; integrationId = nil }
-                tabButton("Tools · \(tools.count)", on: showTools) {
-                    showTools = true
-                    if let first = tools.first { state.setFocus(first.id); integrationId = first.id }
-                }
+                tabButton("Team", on: !showTools) { setTools(false) }
+                tabButton("Tools · \(tools.count)", on: showTools) { setTools(true) }
                 Spacer()
                 if !showTools {
                     // out of the grid: Group chat + 4 agents needed 3 rows and the 4th agent sat below the fold
@@ -102,26 +123,41 @@ struct ColonyHomeView: View {
                 }
             }
             .padding(.horizontal, 4)
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: cols, spacing: 8) {
-                    if !showTools {
+            // two pages side by side; the row slides between them
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    page(cols) {
                         ForEach(store.tasks) { t in
                             AgentPill(task: t, state: state, swapping: $swapping) { openChat(room: t.id) }
                         }
-                    } else {
+                    }
+                    .frame(width: geo.size.width)
+                    page(cols) {
                         ForEach(tools) { t in
                             AgentPill(task: t, state: state, swapping: $swapping) {
                                 state.setFocus(t.id)
                                 integrationId = t.id
                             }
                         }
+                    } footer: {
+                        if tools.isEmpty {
+                            Text("Nothing here yet. Tick pills in Settings → Active pills.")
+                                .font(.system(size: 11)).foregroundColor(Color(hex: "#6B7079")).padding(.top, 12)
+                        }
                     }
+                    .frame(width: geo.size.width)
                 }
-                if showTools && tools.isEmpty {
-                    Text("Nothing here yet. Tick pills in Settings → Active pills.")
-                        .font(.system(size: 11)).foregroundColor(Color(hex: "#6B7079")).padding(.top, 12)
-                }
+                .offset(x: showTools ? -geo.size.width : 0)
             }
+            .clipped()
+        }
+    }
+
+    private func page<C: View, F: View>(_ cols: [GridItem], @ViewBuilder _ content: () -> C,
+                                        @ViewBuilder footer: () -> F = { EmptyView() }) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVGrid(columns: cols, spacing: 6) { content() }
+            footer()
         }
     }
 

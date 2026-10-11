@@ -635,20 +635,61 @@ struct ClaudePlanHeaderPill: View {
 
 struct CompactMiniGrid: View {
     @ObservedObject var state: AppState
+    @ObservedObject private var store = ColonyStore.shared
+    @State private var page = 0                       // 0 = Colony agents, 1 = services
+    @State private var swipe: CGFloat = 0
+    @State private var swipeMonitor: Any?
+    private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
-    private var others: [AgentTask] {
-        Array(state.tasks.filter { $0.id != state.focusId }.prefix(4))
+    /// Two groups of up to 4 Mochis; an empty group is dropped, so a lone group just shows.
+    private var groups: [[AgentTask]] {
+        let agents = ColonyStore.enabled ? Array(store.tasks.prefix(4)) : []
+        let pills = Array(state.tasks.filter { $0.id != state.focusId }.prefix(4))
+        return [agents, pills].filter { !$0.isEmpty }
+    }
+
+    private func flip(_ by: Int) {
+        let n = groups.count
+        guard n > 1 else { return }
+        withAnimation(.easeInOut(duration: 0.3)) { page = (min(page, n - 1) + by + n) % n }
     }
 
     var body: some View {
         let cols = [GridItem(.fixed(12), spacing: 4), GridItem(.fixed(12), spacing: 4)]
-        LazyVGrid(columns: cols, spacing: 4) {
-            ForEach(others) { task in
-                MiniBotCanvasView(task: task)
-                    .frame(width: 12 / 0.6, height: 12 / 0.6)
-                    .frame(width: 12, height: 12, alignment: .center)
+        let all = groups
+        let shown = all.isEmpty ? [] : all[min(page, all.count - 1)]
+        VStack(spacing: 3) {
+            LazyVGrid(columns: cols, spacing: 4) {
+                ForEach(shown) { task in
+                    MiniBotCanvasView(task: task)
+                        .frame(width: 12 / 0.6, height: 12 / 0.6)
+                        .frame(width: 12, height: 12, alignment: .center)
+                }
+            }
+            .id(page)
+            .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)).combined(with: .opacity))
+            if all.count > 1 {
+                HStack(spacing: 3) {
+                    ForEach(0..<all.count, id: \.self) { i in
+                        Circle().fill(Color.white.opacity(i == min(page, all.count - 1) ? 0.7 : 0.25)).frame(width: 3, height: 3)
+                    }
+                }
             }
         }
-        .frame(width: 28, height: 28)
+        .frame(width: 28, height: 36)
+        .clipped()
+        .onReceive(tick) { _ in flip(1) }
+        .onAppear {
+            guard swipeMonitor == nil else { return }
+            swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { e in
+                if e.phase == .began { swipe = 0 }
+                if abs(e.scrollingDeltaX) > abs(e.scrollingDeltaY) {
+                    swipe += e.scrollingDeltaX
+                    if abs(swipe) > 40 { flip(swipe < 0 ? 1 : -1); swipe = 0 }
+                }
+                return e
+            }
+        }
+        .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m); swipeMonitor = nil } }
     }
 }
