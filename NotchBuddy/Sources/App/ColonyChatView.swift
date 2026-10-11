@@ -106,7 +106,7 @@ struct ColonyChatView: View {
     private func roomButton<Content: View>(id: String, color: String, label: String, tip: String,
                                            @ViewBuilder content: () -> Content) -> some View {
         Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { store.room = id }
+            store.room = id
             SoundEngine.shared.play("blip")
         } label: {
             ZStack(alignment: .topTrailing) {
@@ -139,8 +139,10 @@ struct ColonyChatView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(visible) { m in
+                    // Lazy: only the bubbles on screen are laid out, so a long chat stays as fast as a short one.
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        // Only the latest 40 are built: switching rooms costs the same however long the chat is.
+                        ForEach(visible.suffix(40)) { m in
                             ColonyBubble(m: m, showName: room == "auto").equatable().id(m.id)
                         }
                         if busyRooms.contains(room) {

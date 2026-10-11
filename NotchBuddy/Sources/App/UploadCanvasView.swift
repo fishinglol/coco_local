@@ -126,7 +126,9 @@ struct UploadCanvasView: View {
             let inset = CGRect(x: USC.CARD_X+0.75, y: USC.CARD_Y+0.75,
                                width: USC.CARD_W-1.5, height: USC.CARD_H-1.5)
             // dashPhase increases → pattern marches left-to-right at ~20 pt/s
-            let dashPhase = CGFloat(wallTime * 20)
+            // Wrapped to the pattern length (6+5): wallTime is ~8e8 s, and the renderer walks the
+            // dash pattern up to the phase, which froze the app on a drop.
+            let dashPhase = CGFloat((wallTime * 20).truncatingRemainder(dividingBy: 11))
             borderCtx.stroke(roundedRect(inset, r: USC.CARD_R-0.5),
                              with: .color(borderColor),
                              style: StrokeStyle(lineWidth:1.5, dash:[6,5], dashPhase: dashPhase))
