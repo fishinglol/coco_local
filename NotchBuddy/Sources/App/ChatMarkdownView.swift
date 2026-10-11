@@ -82,7 +82,27 @@ struct ChatMarkdownView: View {
         }
     }
 
+    /// CommonMark refuses `**bold**` when the closing `**` follows punctuation and precedes a letter, which is
+    /// the normal case in Thai (no spaces): the asterisks then show up literally. Bold is split on `**` here
+    /// first, the rest (code, links, italics) still goes through the Markdown parser.
     private func inlineAttributed(_ text: String) -> AttributedString {
+        let parts = text.components(separatedBy: "**")
+        guard parts.count >= 3, parts.count % 2 == 1 else { return parseInline(text) }
+        var out = AttributedString()
+        for (i, part) in parts.enumerated() {
+            var seg = parseInline(part)
+            if i % 2 == 1 {
+                let runs = seg.runs.map { ($0.range, $0.inlinePresentationIntent) }
+                for (range, intent) in runs {
+                    seg[range].inlinePresentationIntent = (intent ?? []).union(.stronglyEmphasized)
+                }
+            }
+            out += seg
+        }
+        return out
+    }
+
+    private func parseInline(_ text: String) -> AttributedString {
         var options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace)
         options.failurePolicy = .returnPartiallyParsedIfPossible

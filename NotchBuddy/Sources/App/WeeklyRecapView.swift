@@ -57,7 +57,7 @@ struct WeeklyRecapCardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { summary = RecapStore.shared.weeklySummary() }
-        .onChange(of: state.view) { _, newView in
+        .onChange(of: state.view) { newView in
             if newView == .recap { summary = RecapStore.shared.weeklySummary() }
         }
     }
@@ -120,6 +120,7 @@ enum RecapSharePanel {
 
 // MARK: - Share panel view
 
+@MainActor
 private struct RecapSharePanelView: View {
     let summary: WeeklySummary
     let hideProjects: Bool

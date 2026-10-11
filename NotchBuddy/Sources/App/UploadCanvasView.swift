@@ -11,7 +11,7 @@ struct UploadCanvasView: View {
     private var engine: UploadSequenceEngine { .shared }
 
     var body: some View {
-        TimelineView(.animation) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
             let f = engine.frame(at: tl.date)
             let wallTime = tl.date.timeIntervalSinceReferenceDate
 
@@ -28,7 +28,7 @@ struct UploadCanvasView: View {
                 }
             }
         }
-        .onChange(of: state.droppedFile?.url) { _, url in
+        .onChange(of: state.droppedFile?.url) { url in
             if let url { loadIcon(url: url) }
         }
         .onAppear {

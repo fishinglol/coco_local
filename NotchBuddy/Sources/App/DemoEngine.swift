@@ -2,6 +2,25 @@ import Foundation
 import SwiftUI
 import Combine
 
+// MARK: - DemoPauseBox
+private final class DemoPauseBox: @unchecked Sendable {
+    static let shared = DemoPauseBox()
+    private let lock = NSLock()
+    private var _isPaused: Bool = false
+    var isPaused: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _isPaused
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _isPaused = newValue
+        }
+    }
+}
+
 // MARK: - DemoEngine
 // Scripted ~60 s tour of Coucou for App Store review.
 // Zero network calls, nothing written to disk or Keychain.
@@ -17,7 +36,14 @@ final class DemoEngine: ObservableObject {
     @Published var isActive: Bool = false
 
     // Checked from background threads (pollers). Written only from @MainActor.
+    #if swift(>=5.10)
     nonisolated(unsafe) private(set) static var isPollerPaused: Bool = false
+    #else
+    nonisolated static var isPollerPaused: Bool {
+        get { DemoPauseBox.shared.isPaused }
+        set { DemoPauseBox.shared.isPaused = newValue }
+    }
+    #endif
 
     // MARK: Private state
 
@@ -141,7 +167,7 @@ final class DemoEngine: ObservableObject {
         modeCancellable = s.$mode
             .dropFirst()
             .sink { [weak self] mode in
-                MainActor.assumeIsolated {
+                Task { @MainActor [weak self] in
                     if mode != .hidden, let cont = self?.visibilityContinuation {
                         self?.visibilityContinuation = nil
                         cont.resume()

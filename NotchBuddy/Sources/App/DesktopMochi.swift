@@ -79,7 +79,7 @@ struct DesktopBotView: View {
                 engine.drawHandsAndExtras(context: c, size: size)
             }
         }
-        .onChange(of: appState.effectiveState) { _, newState in
+        .onChange(of: appState.effectiveState) { newState in
             engine.setState(newState)
         }
         .onAppear {
@@ -535,10 +535,19 @@ final class DesktopMochiController {
 
     // MARK: - Event monitors
 
+    @inline(__always)
+    private static func assumeOnMainActor<T>(_ block: @MainActor () throws -> T) rethrows -> T {
+        typealias EscapedBlock = () throws -> T
+        return try withoutActuallyEscaping(block) { escapable in
+            let fn = unsafeBitCast(escapable, to: EscapedBlock.self)
+            return try fn()
+        }
+    }
+
     private func addEventMonitors() {
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 guard event.window === self.panel else { return }
                 self.dragMouseStart    = NSEvent.mouseLocation
                 self.dragOriginAtStart = self.panel?.frame.origin ?? .zero
@@ -548,7 +557,7 @@ final class DesktopMochiController {
 
         mouseDraggedMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 let m = NSEvent.mouseLocation
                 if !self.isDragging {
                     let dist = hypot(m.x - self.dragMouseStart.x, m.y - self.dragMouseStart.y)
@@ -569,7 +578,7 @@ final class DesktopMochiController {
         // Local mouseUp (cursor still within panel)
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 let wasDragging = self.isDragging
                 self.isDragging = false
                 self.dragMouseStart = .zero
@@ -594,7 +603,7 @@ final class DesktopMochiController {
 
         rightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 guard event.window === self.panel else { return }
                 NotificationCenter.default.post(name: .openWardrobeFromDesktop, object: nil)
             }
@@ -656,17 +665,19 @@ final class DesktopMochiController {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.screenSleeping = true
-                self?.viewState?.paused = true
+                self.screenSleeping = true
+                self.viewState?.paused = true
             }
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.screenSleeping = false
-                self?.viewState?.paused = false
+                self.screenSleeping = false
+                self.viewState?.paused = false
             }
         }
     }
@@ -677,17 +688,19 @@ final class DesktopMochiController {
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.screenSleeping = true
-                self?.viewState?.paused = true
+                self.screenSleeping = true
+                self.viewState?.paused = true
             }
         }
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
         ) { [weak self] _ in
+            guard let self else { return }
             Task { @MainActor in
-                self?.screenSleeping = false
-                self?.viewState?.paused = false
+                self.screenSleeping = false
+                self.viewState?.paused = false
             }
         }
     }

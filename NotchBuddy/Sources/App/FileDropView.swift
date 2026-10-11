@@ -10,6 +10,7 @@ final class FileDropNSView: NSView {
     var onDragUpdated: ((CGPoint) -> Void)?
     var onDragExited:  (() -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    var onDragEnded: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -29,6 +30,7 @@ final class FileDropNSView: NSView {
         return .copy
     }
     override func draggingExited(_ sender: NSDraggingInfo?) { onDragExited?() }
+    override func draggingEnded(_ sender: NSDraggingInfo) { onDragEnded?() }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let urls = sender.draggingPasteboard.readObjects(
@@ -43,9 +45,15 @@ final class FileDropNSView: NSView {
 // MARK: - File drop handler
 
 enum FileDropHandler {
+    /// Bumped on every drop. A running sequence stops as soon as it is no longer the latest one,
+    /// so a second drop (or leaving the flow) can't be overwritten by the first one finishing late.
+    @MainActor private static var generation = 0
+
     @MainActor
     static func handle(urls: [URL], state: AppState) async {
         guard let url = urls.first else { return }
+        generation += 1
+        let gen = generation
         let name = url.lastPathComponent
 
         // Start animation immediately — do NOT block on file copy.
@@ -92,7 +100,7 @@ enum FileDropHandler {
         Task { @MainActor in
             var lastTens = 0
             let progStart = Date().addingTimeInterval(preProgress)
-            while lastTens < 9 {
+            while lastTens < 9, gen == generation {
                 try? await Task.sleep(nanoseconds: 80_000_000)
                 let approxP = min(1.0, max(0, Date().timeIntervalSince(progStart) / dur))
                 let tens = Int(approxP * 10)
@@ -105,6 +113,7 @@ enum FileDropHandler {
 
         // Wait for canvas progress to complete (gulp/shrink phase + upload duration)
         try? await Task.sleep(nanoseconds: UInt64((preProgress + dur) * 1_000_000_000))
+        guard gen == generation, state.view == .uploading else { return }
 
         // Canvas shows checkmark at this point
         SoundEngine.shared.play("approve")
@@ -116,6 +125,11 @@ enum FileDropHandler {
         // Clean up upload state
         state.uploadProgress = 0
         state.uploadStartTime = nil
+        // The user left the flow meanwhile (or dropped again): don't pull them back to "choose".
+        guard gen == generation, state.view == .uploading else {
+            if gen == generation { UploadSequenceEngine.shared.deactivate() }
+            return
+        }
 
         // Switch to choose — canvas stays active (uploadActive covers .choose).
         // Engine deactivates when user clicks a canvas choose button or navigates away.

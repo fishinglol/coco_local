@@ -8,7 +8,8 @@ struct IslandViewContent: View {
 
     var body: some View {
         switch view {
-        case .overview:  OverviewView(state: state)
+        case .overview:
+            if ColonyStore.enabled { ColonyHomeView(state: state) } else { OverviewView(state: state) }
         case .empty:     EmptyStateView(state: state)
         case .approval:  ApprovalView(state: state)
         case .question:  QuestionView(state: state)
@@ -19,7 +20,12 @@ struct IslandViewContent: View {
         case .uploading: UploadingView(state: state)
         case .choose:    ChooseView(state: state)
         case .mail:      MailView(state: state)
-        case .prompt:    PromptView(state: state)
+        case .prompt:
+            if ColonyStore.enabled {
+                ColonyChatView(state: state)
+            } else {
+                PromptView(state: state)
+            }
         case .searching: SearchingView(state: state)
         case .result:    ResultView(state: state)
         case .note:      NoteView(state: state)
@@ -146,7 +152,7 @@ struct OverviewView: View {
                 AgentPillsView(state: state)
             }
         }
-        .onChange(of: state.focusId) { _, new in
+        .onChange(of: state.focusId) { new in
             showingN8nDetail = false
             activeDiffId = nil
             #if !APPSTORE
@@ -155,11 +161,11 @@ struct OverviewView: View {
             if new == "integration_github" { GithubPoller.shared.refreshIfStale() }
         }
         #if !APPSTORE
-        .onChange(of: state.view) { _, v in
+        .onChange(of: state.view) { v in
             if v != .overview { state.showingPlanDetail = false; activeDiffId = nil }
         }
         #endif
-        .onChange(of: state.mode) { _, m in
+        .onChange(of: state.mode) { m in
             #if !APPSTORE
             if m != .expanded { state.showingPlanDetail = false; activeDiffId = nil }
             #endif
@@ -297,27 +303,36 @@ struct ApprovalView: View {
     @ObservedObject var state: AppState
 
     var approval: ApprovalInfo? { state.pendingApproval }
+    /// A question from a Colony agent (answered through Colony, not through a Claude Code hook).
+    var isColony: Bool { approval?.pillId == "colony" }
+
+    private func decide(_ decision: String) {
+        if isColony { ColonyStore.shared.answerApproval(allow: decision == "allow") }
+        else { HookServer.shared.sendApprovalDecision(decision) }
+    }
 
     var body: some View {
         ZStack {
             CardBackground(wash: .amber)
             VStack(alignment: .leading, spacing: 5) {
-                AgentWho(task: state.focusTask, label: "needs permission")
+                AgentWho(task: isColony ? nil : state.focusTask,
+                         label: isColony ? "\(approval?.tool ?? "An agent") needs permission" : "needs permission")
                 CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
                 HStack(spacing: 8) {
                     SecondaryButton("Deny") {
-                        HookServer.shared.sendApprovalDecision("deny")
+                        decide("deny")
                     }
                     PrimaryButton("Allow") {
-                        HookServer.shared.sendApprovalDecision("allow")
+                        decide("allow")
                     }
                     // Codex, Copilot CLI and Muse Code do not support updatedPermissions
-                    let hideAlways = approval?.pillId == "agent_codex"
+                    let hideAlways = isColony
+                        || approval?.pillId == "agent_codex"
                         || approval?.pillId == "agent_copilot"
                         || approval?.pillId == "agent_muse"
                     if !hideAlways {
                         SecondaryButton("Always") {
-                            HookServer.shared.sendApprovalDecision("always")
+                            decide("always")
                         }
                     }
                 }
@@ -464,7 +479,7 @@ struct QuestionView: View {
             }
         }
         .onAppear { resetQuestionState() }
-        .onChange(of: state.pendingQuestion) { _, _ in resetQuestionState() }
+        .onChange(of: state.pendingQuestion) { _ in resetQuestionState() }
         .onDisappear { HookServer.shared.releaseQuestionFD() }
     }
 
@@ -549,16 +564,18 @@ struct ErrorView: View {
 struct FinishedView: View {
     @ObservedObject var state: AppState
 
+    private var finishedText: String {
+        if let fl = state.focusTask?.finalLine { return fl }
+        if let s = state.focusTask?.steps.last(where: { !$0.isDiffStep }) { return s }
+        return String(localized: "Session finished")
+    }
+
     var body: some View {
         ZStack {
             CardBackground(wash: .green)
             VStack(alignment: .leading, spacing: 5) {
                 AgentWho(task: state.focusTask, label: "Claude Code finished")
-                Text({
-                    if let fl = state.focusTask?.finalLine { return fl }
-                    if let s = state.focusTask?.steps.last(where: { !$0.isDiffStep }) { return s }
-                    return String(localized: "Session finished")
-                }())
+                Text(finishedText)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -790,7 +807,7 @@ struct UploadView: View {
             .padding(.leading, 196)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onChange(of: state.view) { _, newView in
+        .onChange(of: state.view) { newView in
             newView == .upload ? startTimer() : stopTimer()
         }
         .onAppear {
@@ -1149,12 +1166,12 @@ struct PromptView: View {
                             }
                             .padding(.vertical, 2)
                         }
-                        .onChange(of: state.chatHistory) { _, _ in
+                        .onChange(of: state.chatHistory) { _ in
                             if let last = state.chatHistory.last(where: { !$0.content.isEmpty }) {
                                 proxy.scrollTo(last.id, anchor: .bottom)
                             }
                         }
-                        .onChange(of: state.stateOverride) { _, v in
+                        .onChange(of: state.stateOverride) { v in
                             if v != nil {
                                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
                             } else if let last = state.chatHistory.last(where: { !$0.content.isEmpty }) {
@@ -1230,12 +1247,12 @@ struct PromptView: View {
         }
         .padding(.bottom, 10)
         .onAppear { focused = true }
-        .onChange(of: state.view) { _, view in
+        .onChange(of: state.view) { view in
             if view == .prompt {
                 state.fetchModelsIfNeeded(for: state.chatProvider)
             }
         }
-        .onChange(of: state.chatProvider) { _, provider in
+        .onChange(of: state.chatProvider) { provider in
             if state.view == .prompt {
                 state.fetchModelsIfNeeded(for: provider)
             }
@@ -1359,7 +1376,7 @@ struct ModelPickerView: View {
             }
             state.fetchModelsIfNeeded(for: state.chatProvider)
         }
-        .onChange(of: state.chatProvider) { _, provider in
+        .onChange(of: state.chatProvider) { provider in
             if provider.isLocal {
                 state.fetchedProviderModels[provider] = nil
                 state.providerModelFetchError[provider] = nil
@@ -3061,7 +3078,7 @@ struct CalcomCardView: View {
                 )
             }
         }
-        .onChange(of: appState.focusId) { _, _ in
+        .onChange(of: appState.focusId) { _ in
             selectedDate = nil; selectedBooking = nil; displayHalf = 1
         }
     }
@@ -3508,7 +3525,7 @@ struct TickerView: View {
                 rowB = steps[min(idx, steps.count - 1)]
             }
         }
-        .onChange(of: task?.steps.count) { _, _ in
+        .onChange(of: task?.steps.count) { _ in
             guard let task, !task.steps.isEmpty, !isTransitioning else { return }
             let newIdx = task.stepIndex
             if displayIndex < 0 {
@@ -4634,6 +4651,7 @@ struct SendButtonStyle: ButtonStyle {
 
 struct SettingsIslandView: View {
     @ObservedObject var state: AppState
+    @State private var health: (colony: Bool, gateway: Bool, laya: Bool) = (false, false, false)
 
     private var claudeConnected: Bool {
         let url = FileManager.default.homeDirectoryForCurrentUser
@@ -4699,8 +4717,14 @@ struct SettingsIslandView: View {
 
                 // Connection status
                 HStack(spacing: 14) {
-                    StatusBadge(label: "Claude Code", ok: claudeConnected)
-                    StatusBadge(label: "API", ok: apiConnected)
+                    if ColonyStore.enabled {
+                        StatusBadge(label: "Colony", ok: health.colony)
+                        StatusBadge(label: "OpenClaw", ok: health.gateway)
+                        StatusBadge(label: "Laya", ok: health.laya)
+                    } else {
+                        StatusBadge(label: "Claude Code", ok: claudeConnected)
+                        StatusBadge(label: "API", ok: apiConnected)
+                    }
                     Spacer()
                     Button("Settings…") {
                         NotificationCenter.default.post(name: .openFullSettings, object: nil)
@@ -4710,9 +4734,16 @@ struct SettingsIslandView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.leading, 84)
+            .padding(.leading, 108)
             .padding(.trailing, 16)
             .padding(.vertical, 14)
+        }
+        .task {
+            guard ColonyStore.enabled else { return }
+            while !Task.isCancelled {
+                health = await ColonyService.health()
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
         }
     }
 }

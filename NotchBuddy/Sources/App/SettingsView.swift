@@ -116,6 +116,7 @@ struct SettingsView: View {
 
     // Sidebar selection persisted across sessions
     @AppStorage("settingsSection") private var selectedSection: String = "general"
+    @AppStorage("colonyChatEnabled") private var colonyOn = true
     #if PHONE_LINK
     @AppStorage("iPhoneSyncEnabled") private var iPhoneSyncEnabled = false
     @AppStorage("iPhoneLiveActivityEnabled") private var iPhoneLiveActivityEnabled = false
@@ -158,8 +159,11 @@ struct SettingsView: View {
                         SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
                         SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
                         SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
+                        if !colonyOn {   // ponytail: Chat's providers are replaced by the Colony section while Colony is on
                         SettingsSidebarRow(title: "Chat",         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
+                        }
                         SettingsSidebarRow(title: "Integrations", icon: "puzzlepiece.extension.fill",        color: "#7C5CFF").tag("integrations")
+                        SettingsSidebarRow(title: "Colony",       icon: "person.3.fill",                     color: "#34D399").tag("colony")
                         SettingsSidebarRow(title: "Shortcuts",    icon: "keyboard.fill",                     color: "#6366F1").tag("shortcuts")
                     }
                     .listStyle(.sidebar)
@@ -196,6 +200,7 @@ struct SettingsView: View {
             }
         }
         .onAppear {
+            if colonyOn, selectedSection == "chat" { selectedSection = "colony" }
             #if !APPSTORE
             state.refreshPlanRelayState()
             #endif
@@ -228,6 +233,7 @@ struct SettingsView: View {
         case "agents":       return String(localized: "Agents")
         case "chat":         return String(localized: "Chat")
         case "integrations": return String(localized: "Integrations")
+        case "colony":       return "Colony"
         case "shortcuts":    return String(localized: "Shortcuts")
         default:             return String(localized: "General")
         }
@@ -239,6 +245,7 @@ struct SettingsView: View {
         case "agents":       agentsSection
         case "chat":         chatSection
         case "integrations": integrationsSection
+        case "colony":       ColonySettingsView()
         case "shortcuts":    ShortcutsSettingsView()
         default:             generalSection
         }
@@ -301,7 +308,7 @@ struct SettingsView: View {
         GroupBox("Hotkey") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Show island with shortcut", isOn: $state.hotkeyEnabled)
-                    .onChange(of: state.hotkeyEnabled) { _, _ in
+                    .onChange(of: state.hotkeyEnabled) { _ in
                         HotKeyCenter.shared.reregister(.toggleIsland)
                     }
                 if state.hotkeyEnabled {
@@ -309,11 +316,11 @@ struct SettingsView: View {
                         Text("Shortcut")
                             .frame(width: 70, alignment: .leading)
                         ShortcutRecorderButton(flags: $hotkeyFlags, code: $hotkeyCode)
-                            .onChange(of: hotkeyFlags) { _, v in
+                            .onChange(of: hotkeyFlags) { v in
                                 state.hotkeyFlags = v
                                 HotKeyCenter.shared.reregister(.toggleIsland)
                             }
-                            .onChange(of: hotkeyCode) { _, v in
+                            .onChange(of: hotkeyCode) { v in
                                 state.hotkeyCode = v
                                 HotKeyCenter.shared.reregister(.toggleIsland)
                             }
@@ -328,7 +335,7 @@ struct SettingsView: View {
 
         GroupBox("Startup") {
             Toggle("Launch at Mac startup", isOn: $launchAtStartup)
-                .onChange(of: launchAtStartup) { _, on in toggleStartup(on) }
+                .onChange(of: launchAtStartup) { on in toggleStartup(on) }
                 .padding(6)
         }
 
@@ -363,7 +370,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .onChange(of: state.appLanguage) { _, code in
+                .onChange(of: state.appLanguage) { code in
                     if code.isEmpty {
                         UserDefaults.standard.removeObject(forKey: "AppleLanguages")
                     } else {
@@ -394,14 +401,14 @@ struct SettingsView: View {
         GroupBox("iPhone") {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle(String(localized: "iphone.sync.toggle"), isOn: $iPhoneSyncEnabled)
-                    .onChange(of: iPhoneSyncEnabled) { _, on in CloudProbe.shared.setEnabled(on) }
+                    .onChange(of: iPhoneSyncEnabled) { on in CloudProbe.shared.setEnabled(on) }
                 Text(String(localized: "iphone.sync.description"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle(String(localized: "iphone.live-activity.toggle"), isOn: $iPhoneLiveActivityEnabled)
                     .disabled(!iPhoneSyncEnabled)
-                    .onChange(of: iPhoneLiveActivityEnabled) { _, on in LiveActivityRelay.shared.setEnabled(on) }
+                    .onChange(of: iPhoneLiveActivityEnabled) { on in LiveActivityRelay.shared.setEnabled(on) }
                 Text(String(localized: "iphone.live-activity.description"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -409,7 +416,7 @@ struct SettingsView: View {
                 #if !APPSTORE
                 Toggle(String(localized: "iphone.instruction.toggle"), isOn: $iPhoneInstructionsEnabled)
                     .disabled(!iPhoneSyncEnabled)
-                    .onChange(of: iPhoneInstructionsEnabled) { _, on in InstructionRunner.shared.setEnabled(on) }
+                    .onChange(of: iPhoneInstructionsEnabled) { on in InstructionRunner.shared.setEnabled(on) }
                 Text(String(localized: "iphone.instruction.description"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -439,13 +446,13 @@ struct SettingsView: View {
                         Text(def.name).tag(def.id)
                     }
                 }
-                .onChange(of: state.mainPillId) { _, newId in
+                .onChange(of: state.mainPillId) { newId in
                     state.activeIntegrations.remove(newId)
                     state.loadIntegrationTasks()
                     state.setFocus(newId)
                 }
 
-                ForEach(PillCategory.allCases, id: \.self) { cat in
+                ForEach(PillCategory.allCases.filter { !(colonyOn && $0 == .ai) }, id: \.self) { cat in   // ponytail: chat providers do nothing while Colony answers
                     let catPills = PillCatalog.available.filter { $0.category == cat }
                     if !catPills.isEmpty {
                         Divider()
@@ -457,6 +464,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                if colonyOn { ColonyAgentPills() }   // seam: the Colony team, same rows as the pills above
             }
             .padding(6)
         }
@@ -824,6 +832,15 @@ struct SettingsView: View {
     // MARK: - Chat section
 
     @ViewBuilder private var chatSection: some View {
+        if colonyOn {
+            Text("Chat runs through Colony: models, keys and agents are set in the Colony section. Turn Colony off there to use these providers again.")
+                .font(.system(size: 12)).foregroundColor(.secondary)
+        } else {
+            providerChatSection
+        }
+    }
+
+    @ViewBuilder private var providerChatSection: some View {
         GroupBox(String(localized: "chat.anthropic-api.title")) {
             VStack(alignment: .leading, spacing: 8) {
                 SecureField(String(localized: "chat.api-key.claude"), text: $apiKey)
@@ -842,7 +859,7 @@ struct SettingsView: View {
                     }
                     Text(String(localized: "chat.model.custom")).tag(Self.customModelTag)
                 }
-                .onChange(of: modelChoice) { _, choice in
+                .onChange(of: modelChoice) { choice in
                     if choice != Self.customModelTag {
                         state.claudeModel = choice
                     } else {
@@ -853,7 +870,7 @@ struct SettingsView: View {
                 if modelChoice == Self.customModelTag {
                     TextField(String(localized: "chat.model.custom-id"), text: $customModel)
                         .textFieldStyle(.roundedBorder)
-                        .onChange(of: customModel) { _, value in applyCustomModel(value) }
+                        .onChange(of: customModel) { value in applyCustomModel(value) }
                 }
 
                 Text(String(localized: "chat.model.description"))

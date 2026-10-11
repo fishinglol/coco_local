@@ -7,9 +7,15 @@ import Carbon.HIToolbox
 // We store state in nonisolated(unsafe) globals — safe because all mutations
 // happen on the main thread (Carbon dispatches hot-key events on the main thread).
 
+#if swift(>=5.10)
 private nonisolated(unsafe) var gHotKeyHandler: EventHandlerRef? = nil
 private nonisolated(unsafe) var gHotKeyTable: [UInt32: ShortcutAction] = [:]
 private nonisolated(unsafe) var gOnAction: ((ShortcutAction) -> Void)? = nil
+#else
+private var gHotKeyHandler: EventHandlerRef? = nil
+private var gHotKeyTable: [UInt32: ShortcutAction] = [:]
+private var gOnAction: ((ShortcutAction) -> Void)? = nil
+#endif
 
 private func coucouHotKeyEventHandler(
     _: EventHandlerCallRef?,
@@ -31,7 +37,7 @@ private func coucouHotKeyEventHandler(
         return OSStatus(eventNotHandledErr)
     }
     // Carbon events are dispatched on the main thread.
-    MainActor.assumeIsolated { gOnAction?(action) }
+    DispatchQueue.main.async { gOnAction?(action) }
     return noErr
 }
 

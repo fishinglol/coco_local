@@ -244,6 +244,9 @@ final class UploadSequenceEngine {
     // MARK: - Simulation
 
     private func simulateTo(_ tTarget: Double) {
+        // A stalled main thread (island hidden, Mac busy) must not make the next frame replay seconds of
+        // 240 Hz steps at once: skip ahead instead, so the UI never freezes catching up.
+        if tTarget - sim.t > 0.1 { sim.t = tTarget - 0.1 }
         while sim.t < tTarget - 1e-10 {
             let dt = min(USC.DT, tTarget - sim.t)
             stepOnce(dt: dt)

@@ -386,14 +386,10 @@ final class ClaudeService {
                     if !visible.isEmpty, state.stateOverride == .thinking {
                         state.stateOverride = nil   // hide typing dots on first visible text
                     }
-                    if let idx = state.chatHistory.firstIndex(where: { $0.id == msgId }) {
-                        state.chatHistory[idx].content = visible
-                    }
+                    state.updateChatMessage(id: msgId, content: visible)
                 }
                 conversationMessages.append(["role": "assistant", "content": final])
-                if let idx = state.chatHistory.firstIndex(where: { $0.id == msgId }) {
-                    state.chatHistory[idx].content = final
-                }
+                state.updateChatMessage(id: msgId, content: final)
                 state.stateOverride = nil
                 state.view = .prompt
                 NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)

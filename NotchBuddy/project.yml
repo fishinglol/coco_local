@@ -2,7 +2,7 @@ name: NotchBuddy
 options:
   bundleIdPrefix: fr.louisraille
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "13.0"
   xcodeVersion: "27.0"
   createIntermediateGroups: true
 
@@ -21,7 +21,7 @@ configs:
 
 settings:
   base:
-    SWIFT_VERSION: "6.0"
+    SWIFT_VERSION: "5.9"
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_STYLE: Manual
     OTHER_SWIFT_FLAGS: "-strict-concurrency=complete"
@@ -154,7 +154,7 @@ targets:
         PRODUCT_NAME: Coucou
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
         ENABLE_SANDBOX: NO
       configs:
         DebugCloud:
@@ -221,7 +221,7 @@ targets:
         PRODUCT_NAME: Coucou
         INFOPLIST_FILE: Resources/InfoAppStore.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_ENTITLEMENTS: Resources/CoucouAppStore.entitlements

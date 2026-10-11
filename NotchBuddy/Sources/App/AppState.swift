@@ -524,6 +524,11 @@ final class AppState: ObservableObject {
         tasks[idx].pillBadge = badge
     }
 
+    func updateChatMessage(id: UUID, content: String) {
+        guard let idx = chatHistory.firstIndex(where: { $0.id == id }) else { return }
+        chatHistory[idx].content = content
+    }
+
     /// Called on main thread after each GitHub pulse poll. Fires badge + sound based on events.
     func handleGitHubEvents(_ events: [GitHubEvent]) {
         guard !events.isEmpty else { return }

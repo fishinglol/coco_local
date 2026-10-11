@@ -57,7 +57,7 @@ final class IslandWindowController: NSWindowController {
         let nH = geometry.height
 
         let panelW: CGFloat = 720
-        let panelH: CGFloat = 320
+        let panelH: CGFloat = 460
         let sf = screen.frame
         let panel = IslandPanel(
             contentRect: NSRect(x: sf.midX - panelW/2, y: sf.maxY - panelH,
@@ -130,6 +130,18 @@ final class IslandWindowController: NSWindowController {
                 // Do NOT collapse — drag session still active; island stays open.
                 NotificationCenter.default.post(name: .botMorphTo, object: CGFloat(0))
                 UploadSequenceEngine.shared.exitZone()
+            }
+        }
+        // A drag that ends without a drop (Esc, released outside) must not leave the island stuck on
+        // "Drop your files here" with the engine running.
+        dropView.onDragEnded = {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                let s = AppState.shared
+                guard s.view == .upload, !s.fileDragOver else { return }
+                UploadSequenceEngine.shared.deactivate()
+                s.fileDragOver = false
+                s.view = .overview
             }
         }
         dropView.onFilesDropped = { urls in
@@ -245,6 +257,8 @@ final class IslandWindowController: NSWindowController {
             }
         }
 
+        autoCloseIfIdle(mouseInside: inIsland, mouse: mouse)
+
         // Mouse in screen coords (Y flipped, origin top-left) for Bot look-at
         let screenH = panel.screen?.frame.height ?? NSScreen.main!.frame.height
         let newPos = CGPoint(x: mouse.x - (panel.screen?.frame.minX ?? 0), y: screenH - mouse.y)
@@ -293,6 +307,22 @@ final class IslandWindowController: NSWindowController {
     }
 
     private var lastMouse: CGPoint = .zero
+
+    /// Folds the island after `autoCloseInterval` seconds without activity, the same clock the countdown
+    /// bar shows. Before, the island only folded 15 s after the mouse LEFT it, so with the pointer resting
+    /// on it the bar ran out and nothing happened.
+    private func autoCloseIfIdle(mouseInside: Bool, mouse: CGPoint) {
+        guard state.mode == .expanded else { lastMouse = mouse; return }
+        if mouseInside, hypot(mouse.x - lastMouse.x, mouse.y - lastMouse.y) > 2 { state.lastActivity = .now }
+        lastMouse = mouse
+        let working = !ColonyStore.shared.busyRooms.isEmpty || state.stateOverride != nil
+        let alertViews: Set<IslandView> = [.approval, .question, .error, .upload, .uploading, .choose, .mail, .greeting]
+        if working || state.isPinned || alertViews.contains(state.view) || fsm.isHeldOpen?() == true {
+            state.lastActivity = .now
+            return
+        }
+        if Date.now.timeIntervalSince(state.lastActivity) >= state.autoCloseInterval { collapse() }
+    }
 
     // MARK: - Bot-head hover (love emote — mirrors prototype botHover())
 
@@ -447,6 +477,7 @@ final class IslandWindowController: NSWindowController {
     private func startLocalKeyMonitor() {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.islandPanel.isKeyWindow else { return event }
+            self.state.lastActivity = .now
             return self.handleIslandKey(event) ? nil : event
         }
     }
@@ -630,11 +661,11 @@ final class IslandWindowController: NSWindowController {
         }
 
         // Window attach drag.
-        // Uses MainActor.assumeIsolated (synchronous) to avoid race with pollFrame().
+        // Uses assumeOnMainActor (synchronous) to avoid race with pollFrame().
         // Global mouseUp is the reliable fallback when cursor is outside our panel frame.
         NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 guard self.wasInIsland else { return }
                 self.pendingIslandClick = true
                 self.hoverTimer?.cancel()
@@ -642,8 +673,11 @@ final class IslandWindowController: NSWindowController {
                 self.botHovering = false
                 // Drag only starts when clicking directly on the bot head
                 guard self.isBotHit(event.locationInWindow) else { return }
-                // Notch Mochi is invisible when on desktop — no drag, no slap
-                guard !self.state.mochiOnDesktop else { return }
+                // Mochi is out on the desktop: clicking his empty spot in the island brings him home.
+                if self.state.mochiOnDesktop {
+                    DesktopMochiController.shared.flyOutOrHome()
+                    return
+                }
                 self.attachDragStart = NSEvent.mouseLocation
                 // Post slap only when expanded
                 guard self.state.mode == .expanded else { return }
@@ -653,10 +687,10 @@ final class IslandWindowController: NSWindowController {
         }
         NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 guard let start = self.attachDragStart, !self.inAttachDrag else { return }
                 let m = NSEvent.mouseLocation
-                guard hypot(m.x - start.x, m.y - start.y) > 3 else { return }
+                guard hypot(m.x - start.x, m.y - start.y) > 12 else { return }
                 self.inAttachDrag = true
                 NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.love)
                 self.showDragGhost()
@@ -666,12 +700,20 @@ final class IslandWindowController: NSWindowController {
 
         // mouseUp — local (cursor still in panel) + global (cursor moved outside panel frame)
         let finishDrag: @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
             Task { @MainActor in
-                guard let self, self.inAttachDrag else { return }
+                guard self.inAttachDrag else { return }
                 let mouse = NSEvent.mouseLocation
+                let origin = self.attachDragStart ?? mouse
                 self.inAttachDrag = false
                 self.attachDragStart = nil
                 self.state.stateOverride = nil
+
+                // A short wiggle is a click, not a throw: Mochi goes straight back, never to the desktop.
+                if hypot(mouse.x - origin.x, mouse.y - origin.y) < 40 {
+                    self.hideDragGhost()
+                    return
+                }
 
                 #if !APPSTORE
                 let windowCtx = self.windowContextAtPoint(mouse)
@@ -710,7 +752,7 @@ final class IslandWindowController: NSWindowController {
         }
         NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 let hadPendingClick = self.pendingIslandClick
                 let wasDragging     = self.inAttachDrag
                 self.pendingIslandClick = false
@@ -736,7 +778,7 @@ final class IslandWindowController: NSWindowController {
 
         NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
             guard let self else { return event }
-            MainActor.assumeIsolated {
+            Self.assumeOnMainActor {
                 guard self.wasInIsland, self.isBotHit(event.locationInWindow) else { return }
                 guard !self.state.mochiOnDesktop else { return }
                 if self.state.mode == .expanded && self.state.view == .wardrobe {
@@ -1020,9 +1062,7 @@ final class IslandWindowController: NSWindowController {
         // Chat view resizes dynamically — must match IslandContainer.chatPromptHeight
         let islandH: CGFloat
         if s.mode == .expanded && s.view == .prompt {
-            let base: CGFloat = 240
-            let perMsg: CGFloat = 40
-            islandH = min(300, base + CGFloat(s.chatHistory.count) * perMsg)
+            islandH = ChatHeight.current(coucouCount: s.chatHistory.count)
         } else {
             islandH = fixedH
         }
@@ -1060,6 +1100,15 @@ final class IslandWindowController: NSWindowController {
         )
     }
 
+    @inline(__always)
+    private static func assumeOnMainActor<T>(_ block: @MainActor () throws -> T) rethrows -> T {
+        typealias EscapedBlock = () throws -> T
+        return try withoutActuallyEscaping(block) { escapable in
+            let fn = unsafeBitCast(escapable, to: EscapedBlock.self)
+            return try fn()
+        }
+    }
+
     nonisolated func cleanup() {
         // Called explicitly before release if needed
     }
@@ -1085,9 +1134,7 @@ final class IslandPanel: NSPanel {
                                       progress: s.uploadProgress, nw: nw, nh: nh)
         let h: CGFloat
         if s.mode == .expanded && s.view == .prompt {
-            let base: CGFloat = 240
-            let perMsg: CGFloat = 40
-            h = min(300, base + CGFloat(s.chatHistory.count) * perMsg)
+            h = ChatHeight.current(coucouCount: s.chatHistory.count)
         } else {
             h = fixedH
         }

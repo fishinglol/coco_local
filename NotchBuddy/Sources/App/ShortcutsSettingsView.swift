@@ -4,6 +4,7 @@ import AppKit
 // MARK: - ShortcutsSettingsView
 
 /// "Shortcuts" section inside SettingsView.
+@MainActor
 struct ShortcutsSettingsView: View {
     // Conflicts detected by HotKeyCenter (system already owns that combo)
     @State private var systemConflicts: Set<ShortcutAction> = []
@@ -79,7 +80,7 @@ struct ShortcutsSettingsView: View {
 
             ShortcutRecorderButton(flags: specFlagsBinding(action), code: specCodeBinding(action))
                 .disabled(!isEnabled)
-                .onChange(of: specs[action]) { _, _ in specChanged(action) }
+                .onChange(of: specs[action]) { _ in specChanged(action) }
 
             if hasSysConf {
                 conflictTag(String(localized: "shortcut.conflict.system"), color: .orange)

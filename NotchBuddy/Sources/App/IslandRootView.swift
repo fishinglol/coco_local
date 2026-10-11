@@ -29,14 +29,13 @@ struct IslandContainer: View {
     // topRadius > 0 → convex expanded corners; < 0 → concave ear cutouts
     @State private var islandTopRadius: CGFloat = 0
     @State private var greetNotif: Bool = false
+    @State private var lastMode: IslandMode = .compact
 
     private let openSpring = Animation.spring(response: 0.5, dampingFraction: 0.72)
     private let closeEase  = Animation.timingCurve(0.45, 0, 0.2, 1, duration: 0.34)
 
     private var chatPromptHeight: CGFloat {
-        let base: CGFloat = 240
-        let perMsg: CGFloat = 40
-        return min(300, base + CGFloat(state.chatHistory.count) * perMsg)
+        return ChatHeight.current(coucouCount: state.chatHistory.count)
     }
 
     /// Pixels the content must be pushed down to clear the concave ear transparent area.
@@ -131,7 +130,9 @@ struct IslandContainer: View {
             .animation(.easeInOut(duration: 0.25), value: state.mode == .compact)
         }
         .frame(width: islandWidth, height: islandHeight, alignment: .topLeading)
-        .onChange(of: state.mode) { oldMode, newMode in
+        .onChange(of: state.mode) { newMode in
+            let oldMode = lastMode
+            lastMode = newMode
             let shrinking = modeOrder(newMode) < modeOrder(oldMode)
             let anim = shrinking ? closeEase : openSpring
             let (w, h) = islandSize(mode: newMode, view: state.view,
@@ -146,7 +147,7 @@ struct IslandContainer: View {
                 islandTopRadius  = tr
             }
         }
-        .onChange(of: state.view) { _, newView in
+        .onChange(of: state.view) { newView in
             guard state.mode == .expanded else { return }
             // Deactivate engine if user navigates outside the upload flow
             let uploadViews: Set<IslandView> = [.upload, .uploading, .choose]
@@ -161,7 +162,15 @@ struct IslandContainer: View {
                 islandHeight = newView == .prompt ? chatPromptHeight : h
             }
         }
-        .onChange(of: state.chatHistory.count) { _, _ in
+        .onReceive(ColonyStore.shared.objectWillChange) { _ in
+            // Published values change after this fires; read them on the next turn of the run loop.
+            DispatchQueue.main.async {
+                guard state.mode == .expanded, state.view == .prompt else { return }
+                let h = chatPromptHeight
+                if h != islandHeight { withAnimation(openSpring) { islandHeight = h } }
+            }
+        }
+        .onChange(of: state.chatHistory.count) { _ in
             guard state.mode == .expanded, state.view == .prompt else { return }
             withAnimation(openSpring) { islandHeight = chatPromptHeight }
         }
