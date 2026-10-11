@@ -30,6 +30,9 @@ final class ColonyStore: ObservableObject {
     @Published var offline = false
     @Published var errorText: String?
     @Published var activity = ColonyActivity()
+    /// A reminder an agent set (OpenClaw's `cron`) that just fired; shown in the chat until tapped away.
+    @Published var reminder: String?
+    private var reminderTask: Task<Void, Never>?
 
     let live = LiveReply()
     /// Agents the user switched off in Settings → Active pills ("<workspace id>:<agent id>"). Only hides them in
@@ -241,6 +244,29 @@ final class ColonyStore: ObservableObject {
         state.pendingApproval = nil
         state.isPinned = false
         state.view = .prompt
+    }
+
+    /// Keeps a Gateway connection that listens for reminders going off; started once at launch.
+    func watchReminders() {
+        guard reminderTask == nil else { return }
+        reminderTask = Task {
+            while !Task.isCancelled {
+                if Self.enabled {
+                    await GatewayClient.shared.watchReminders { title, text, session in
+                        Task { @MainActor in ColonyStore.shared.reminderFired(title: title, text: text, session: session) }
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
+
+    private func reminderFired(title: String, text: String, session: String) {
+        let who = agents.first { session.hasPrefix("agent:\(workspaceId ?? "")-\($0.id):") }?.name
+        let body = text.isEmpty ? title : text
+        reminder = (who.map { "\($0): " } ?? "") + body
+        SoundEngine.shared.play("finish")
+        NotificationCenter.default.post(name: .hookExpand, object: IslandView.prompt)
     }
 
     private static let gatewayPrefix = "gateway-"

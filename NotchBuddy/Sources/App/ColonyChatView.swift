@@ -154,6 +154,14 @@ struct ColonyChatView: View {
                         if let e = errorText {
                             Text(e).font(.system(size: 11)).foregroundColor(Color(hex: "#FF8D97"))
                         }
+                        if let r = store.reminder {
+                            Button { store.reminder = nil } label: {
+                                Text("⏰ " + r).font(.system(size: 12, weight: .medium)).foregroundColor(Color(hex: "#FFE08A"))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(Color(hex: "#FFD84D").opacity(0.14)).clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                     .padding(.vertical, 2)
                 }

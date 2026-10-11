@@ -313,6 +313,32 @@ actor GatewayClient {
 
     private func removeListener(_ id: UUID) { listeners.removeValue(forKey: id) }
 
+    private var reminderListener: UUID?
+    private var subscribedSocket: URLSessionWebSocketTask?
+
+    /// Reminders: calls `handler(title, text, sessionKey)` when an automation (the agents' `cron` tool) has run.
+    /// Safe to call again and again: it reconnects after a drop and re-subscribes, the handler is set once.
+    /// `cron` events are scoped to sessions this connection subscribed to, so it subscribes to the roster as well
+    /// (chat turns subscribe to their own session). ponytail: not verified live that the roster subscription is enough.
+    func watchReminders(_ handler: @escaping (String, String, String) -> Void) async {
+        guard (try? await ensureConnected()) != nil, let ws = socket else { return }
+        if reminderListener == nil {
+            let id = UUID()
+            reminderListener = id
+            listeners[id] = { event, p in
+                guard event == "cron", p["action"] as? String == "finished" else { return }
+                let job = p["job"] as? [String: Any] ?? [:]
+                let title = job["name"] as? String ?? "Reminder"
+                let text = (p["summary"] as? String) ?? ""
+                handler(title, text, p["sessionKey"] as? String ?? "")
+            }
+        }
+        if subscribedSocket !== ws {
+            subscribedSocket = ws
+            _ = try? await request("sessions.subscribe")
+        }
+    }
+
     // MARK: Plumbing
 
     private static func readFrame(_ ws: URLSessionWebSocketTask) async throws -> [String: Any] {
