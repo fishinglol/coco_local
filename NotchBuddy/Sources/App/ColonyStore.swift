@@ -265,6 +265,8 @@ final class ColonyStore: ObservableObject {
         let who = agents.first { session.hasPrefix("agent:\(workspaceId ?? "")-\($0.id):") }?.name
         let body = text.isEmpty ? title : text
         reminder = (who.map { "\($0): " } ?? "") + body
+        let shown = reminder
+        Task { try? await Task.sleep(nanoseconds: 30_000_000_000); if reminder == shown { reminder = nil } }   // clears itself
         SoundEngine.shared.play("finish")
         NotificationCenter.default.post(name: .hookExpand, object: IslandView.prompt)
     }

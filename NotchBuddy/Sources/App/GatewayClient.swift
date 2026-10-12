@@ -329,7 +329,9 @@ actor GatewayClient {
                 guard event == "cron", p["action"] as? String == "finished" else { return }
                 let job = p["job"] as? [String: Any] ?? [:]
                 let title = job["name"] as? String ?? "Reminder"
-                let text = (p["summary"] as? String) ?? ""
+                // the reminder's own text; the run's summary can carry the model's thinking-aloud
+                let own = (job["payload"] as? [String: Any])?["message"] as? String
+                let text = own ?? (p["summary"] as? String) ?? ""
                 handler(title, text, p["sessionKey"] as? String ?? "")
             }
         }

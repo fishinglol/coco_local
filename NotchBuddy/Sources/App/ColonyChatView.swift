@@ -156,7 +156,7 @@ struct ColonyChatView: View {
                         }
                         if let r = store.reminder {
                             Button { store.reminder = nil } label: {
-                                Text("⏰ " + r).font(.system(size: 12, weight: .medium)).foregroundColor(Color(hex: "#FFE08A"))
+                                Text("⏰ " + r + "  ✕").font(.system(size: 12, weight: .medium)).foregroundColor(Color(hex: "#FFE08A"))
                                     .padding(.horizontal, 10).padding(.vertical, 6)
                                     .background(Color(hex: "#FFD84D").opacity(0.14)).clipShape(RoundedRectangle(cornerRadius: 10))
                             }
@@ -168,9 +168,21 @@ struct ColonyChatView: View {
                 .onChange(of: visible.count) { _ in
                     if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
+                // Opening the chat or switching room: start at the newest message, not the oldest. The list is lazy,
+                // so the jump is repeated once after it has laid out.
+                .onAppear { jumpToLatest(proxy) }
+                .onChange(of: room) { _ in jumpToLatest(proxy) }
                 .onChange(of: busyRooms) { _ in proxy.scrollTo("typing", anchor: .bottom) }
             }
             .frame(maxHeight: .infinity)
+        }
+    }
+
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        for delay in [0.0, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
         }
     }
 

@@ -308,6 +308,19 @@ final class IslandWindowController: NSWindowController {
 
     private var lastMouse: CGPoint = .zero
 
+    /// False while something needs the user (a running turn, a question, a pinned island, a held-open state).
+    private var canFold: Bool {
+        let working = !ColonyStore.shared.busyRooms.isEmpty || state.stateOverride != nil
+        let alertViews: Set<IslandView> = [.approval, .question, .error, .upload, .uploading, .choose, .mail, .greeting]
+        return !(working || state.isPinned || alertViews.contains(state.view) || fsm.isHeldOpen?() == true)
+    }
+
+    /// The user clicked or typed in another app while the pointer is off the island: fold now, don't wait out the countdown.
+    private func foldOnActivityElsewhere() {
+        guard state.mode == .expanded, !wasInIsland, canFold else { return }
+        collapse()
+    }
+
     /// Folds the island after `autoCloseInterval` seconds without activity, the same clock the countdown
     /// bar shows. Before, the island only folded 15 s after the mouse LEFT it, so with the pointer resting
     /// on it the bar ran out and nothing happened.
@@ -315,9 +328,7 @@ final class IslandWindowController: NSWindowController {
         guard state.mode == .expanded else { lastMouse = mouse; return }
         if mouseInside, hypot(mouse.x - lastMouse.x, mouse.y - lastMouse.y) > 2 { state.lastActivity = .now }
         lastMouse = mouse
-        let working = !ColonyStore.shared.busyRooms.isEmpty || state.stateOverride != nil
-        let alertViews: Set<IslandView> = [.approval, .question, .error, .upload, .uploading, .choose, .mail, .greeting]
-        if working || state.isPinned || alertViews.contains(state.view) || fsm.isHeldOpen?() == true {
+        if !canFold {
             state.lastActivity = .now
             return
         }
@@ -615,6 +626,12 @@ final class IslandWindowController: NSWindowController {
                     }
                 }
             }
+        }
+
+        // Global monitors only see events that go to OTHER apps, so these are "something not on the island".
+        let elsewhere: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+        NSEvent.addGlobalMonitorForEvents(matching: elsewhere) { [weak self] _ in
+            Task { @MainActor in self?.foldOnActivityElsewhere() }
         }
 
         // Hook server expand requests (alerts only)
