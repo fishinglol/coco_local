@@ -320,7 +320,7 @@ struct ColonyChatView: View {
             Task { @MainActor in
                 let file = ColonyWindowContext.file(app: w.app, title: w.title, url: w.url)
                 store.send(q, file: file)
-                if let file { try? await Task.sleep(nanoseconds: 60_000_000_000); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+                if let file { try? await Task.sleep(nanoseconds: 60_000_000_000); ColonyWindowContext.cleanup(file) }
             }
             return
         }
@@ -499,8 +499,24 @@ enum ColonyWindowContext {
         "com.microsoft.edgemac": "tell application \"Microsoft Edge\" to return execute active tab of front window javascript \"document.body.innerText\"",
     ]
 
-    /// Writes the context to a temporary .txt and returns it (the caller removes its folder).
+    /// A local file shown in a browser (a PDF, an image, a text file) is sent as itself: its text is not on screen.
+    private static func localFile(_ url: String?) -> URL? {
+        guard let url, url.hasPrefix("file://"), let u = URL(string: url), u.isFileURL else { return nil }
+        let size = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? nil
+        guard let size, size > 0, size <= 20_000_000 else { return nil }
+        return u
+    }
+
+    /// Removes a file made by `file(...)`; the user's own file (a local PDF) is never touched.
+    static func cleanup(_ file: URL) {
+        let dir = file.deletingLastPathComponent()
+        guard dir.lastPathComponent.hasPrefix("colony-window-") else { return }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// The file to send with the message: the local file itself, or a temporary .txt with the window's text.
     static func file(app: String, title: String, url: String?) -> URL? {
+        if let local = localFile(url) { return local }
         var out = "Window context (the window the user dropped Mochi on)\nApp: \(app)\nWindow: \(title)\n"
         if let url { out += "URL: \(url)\n" }
         let running = NSWorkspace.shared.runningApplications
@@ -546,7 +562,7 @@ enum ColonyWindowContext {
         var chars = 0
         var visited = 0
         func walk(_ el: AXUIElement, depth: Int) {
-            guard depth < 14, visited < 4000, chars < maxChars else { return }
+            guard depth < 60, visited < 8000, chars < maxChars else { return }
             visited += 1
             var role: CFTypeRef?
             AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
@@ -565,7 +581,14 @@ enum ColonyWindowContext {
             }
         }
         // swiftlint:disable:next force_cast
-        walk(ref as! AXUIElement, depth: 0)
+        let window = ref as! AXUIElement
+        walk(window, depth: 0)
+        if lines.isEmpty {
+            // The tree of an Electron/Chromium app is built after the first request: give it a moment and read again.
+            Thread.sleep(forTimeInterval: 0.7)
+            visited = 0
+            walk(window, depth: 0)
+        }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 }
