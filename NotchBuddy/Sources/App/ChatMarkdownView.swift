@@ -95,6 +95,37 @@ struct ChatMarkdownView: View {
 
         case .rule:
             Divider().opacity(0.3)
+
+        case .table(let header, let rows):
+            // Wide tables scroll sideways instead of squeezing every column.
+            ScrollView(.horizontal, showsIndicators: false) {
+                Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
+                    GridRow {
+                        ForEach(Array(header.enumerated()), id: \.offset) { _, h in
+                            Text(inlineAttributed(h))
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Color(hex: "#F1F2F4"))
+                                .frame(minWidth: 56, maxWidth: 200, alignment: .leading)
+                        }
+                    }
+                    Divider().opacity(0.3).gridCellUnsizedAxes(.horizontal)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, c in
+                                Text(inlineAttributed(c))
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(hex: "#B0B5BE"))
+                                    .frame(minWidth: 56, maxWidth: 200, alignment: .leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                .padding(10)
+            }
+            .background(Color(hex: "#0D0E12"))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.08), lineWidth: 1))
         }
     }
 
@@ -103,8 +134,43 @@ struct ChatMarkdownView: View {
     /// first, the rest (code, links, italics) still goes through the Markdown parser.
     private func inlineAttributed(_ text: String) -> AttributedString {
         if let hit = MarkdownCache.inline.object(forKey: text as NSString) { return hit.value }
-        let out = buildInline(text)
+        let out = buildInline(Self.mathSymbols(text))
         MarkdownCache.inline.setObject(MarkdownCache.Inline(out), forKey: text as NSString)
+        return out
+    }
+
+    private static let latexSymbols: [String: String] = [
+        "\\rightarrow": "→", "\\to": "→", "\\leftarrow": "←", "\\leftrightarrow": "↔", "\\Rightarrow": "⇒",
+        "\\Leftarrow": "⇐", "\\Leftrightarrow": "⇔", "\\uparrow": "↑", "\\downarrow": "↓",
+        "\\times": "×", "\\div": "÷", "\\pm": "±", "\\approx": "≈", "\\neq": "≠", "\\leq": "≤",
+        "\\geq": "≥", "\\infty": "∞", "\\cdot": "·", "\\checkmark": "✓", "\\ldots": "…", "\\dots": "…",
+        "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ", "\\pi": "π", "\\mu": "μ",
+        "\\sigma": "σ", "\\lambda": "λ", "\\theta": "θ", "\\Delta": "Δ", "\\sum": "∑", "\\degree": "°",
+    ]
+
+    /// The chat has no LaTeX engine; `$\rightarrow$` and the like are common in replies, so a `$…$` span that only
+    /// holds known symbol commands becomes the symbols. Any other `$` text (prices, unknown commands) is left alone.
+    static func mathSymbols(_ text: String) -> String {
+        guard text.contains("$") else { return text }
+        let parts = text.components(separatedBy: "$")
+        guard parts.count >= 3 else { return text }
+        var out = parts[0]
+        var i = 1
+        while i < parts.count {
+            let span = parts[i]
+            let closed = i + 1 < parts.count
+            var converted = span
+            for (cmd, sym) in latexSymbols { converted = converted.replacingOccurrences(of: cmd, with: sym) }
+            if closed, span.contains("\\"), !converted.contains("\\") {
+                out += converted
+                i += 1
+                if i < parts.count { out += parts[i] }   // text after the closing $
+                i += 1
+            } else {
+                out += "$" + span
+                i += 1
+            }
+        }
         return out
     }
 

@@ -203,26 +203,44 @@ final class ColonyStore: ObservableObject {
         var reply = ""
         var failed = false
         var heardFromGateway = false
+        var usedTool = false
         live.status = "\(turn.roleName) · Preparing…"
-        do {
+
+        /// One chat.send and its events; returns the final text.
+        func consume(_ message: String, attachments: [[String: Any]]) async throws -> String {
+            var text = ""
             for try await event in await GatewayClient.shared.chat(agentId: turn.agentId, session: turn.session,
-                                                                  text: text, model: turn.model,
+                                                                  text: message, model: turn.model,
                                                                   permissionMode: turn.permissionMode, cwd: turn.cwd,
-                                                                  attachments: turn.attachments) {
+                                                                  attachments: attachments) {
                 heardFromGateway = true
                 switch event {
                 case .status(let s):
                     live.status = "\(turn.roleName) · " + Self.statusText(s)
                 case .delta(let d):
-                    reply += d
-                    live.partial = ColonyPartial(agentId: turn.roleId, agentName: turn.roleName, text: reply)
+                    text += d
+                    live.partial = ColonyPartial(agentId: turn.roleId, agentName: turn.roleName, text: text)
                 case .tool(let title, let detail, let done, _):
+                    usedTool = true
                     live.status = "\(turn.roleName) · " + (done ? "Finished: " : "") + title + (detail.isEmpty ? "" : ": " + detail)
                 case .approval(let ask):
                     showGatewayApproval(ask, agent: turn.roleName)
                 case .final(let full):
-                    reply = full
+                    text = full
                 }
+            }
+            return text
+        }
+
+        do {
+            reply = try await consume(text, attachments: turn.attachments)
+            // A small model sometimes ends the turn right after a tool with nothing readable ("}"). Ask once more,
+            // in the same session where the tool result is already, for the answer in words.
+            if usedTool, !Self.hasReadableAnswer(reply) {
+                live.partial = nil
+                live.status = "\(turn.roleName) · Writing the answer…"
+                let again = try await consume(Self.summarizeNudge, attachments: [])
+                if Self.hasReadableAnswer(again) { reply = again }
             }
         } catch {
             failed = true
@@ -256,6 +274,15 @@ final class ColonyStore: ObservableObject {
             }
         }
         return true
+    }
+
+    private static let summarizeNudge =
+        "Using the tool results above, answer my question now in plain words. Do not write JSON or call a tool."
+
+    /// The last paragraph of a reply has at least one letter or digit (not just "}" or an empty string).
+    private static func hasReadableAnswer(_ reply: String) -> Bool {
+        let last = reply.components(separatedBy: "\n\n").last ?? reply
+        return last.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
     }
 
     private static func statusText(_ phase: String) -> String {

@@ -38,6 +38,32 @@ struct ColonyMessage: Identifiable, Equatable {
     let confidence: Double?    // decider confidence, group chat only
     let workedSeconds: Double?
     let stepCount: Int
+    var sources: [ColonySource] = []     // pages the agent's web search / web fetch really returned
+}
+
+/// One page an agent read from the web (Colony's trace parses it out of the tool's own result).
+struct ColonySource: Identifiable, Equatable {
+    var id: String { url }
+    let query: String          // the search it came from ("" for an opened page)
+    let title: String
+    let url: String
+    let site: String
+    let snippet: String
+
+    /// All sources in a message's steps, once per URL.
+    static func from(steps: Any?) -> [ColonySource] {
+        var seen = Set<String>()
+        var out: [ColonySource] = []
+        for step in steps as? [[String: Any]] ?? [] {
+            for r in step["sources"] as? [[String: Any]] ?? [] {
+                guard let url = r["url"] as? String, seen.insert(url).inserted else { continue }
+                out.append(ColonySource(query: step["tool"] as? String == "web_search" ? step["detail"] as? String ?? "" : "",
+                                        title: r["title"] as? String ?? url, url: url,
+                                        site: r["site"] as? String ?? "", snippet: r["snippet"] as? String ?? ""))
+            }
+        }
+        return out
+    }
 }
 
 /// A reply that is still being written (streamed by the Gateway, published through /api/activity).
@@ -300,7 +326,8 @@ enum ColonyService {
                                  agentName: meta["role_name"] as? String,
                                  confidence: meta["confidence"] as? Double,
                                  workedSeconds: meta["worked_s"] as? Double,
-                                 stepCount: (meta["steps"] as? [Any])?.count ?? 0)
+                                 stepCount: (meta["steps"] as? [Any])?.count ?? 0,
+                                 sources: ColonySource.from(steps: meta["steps"]))
         }
     }
 
@@ -378,7 +405,8 @@ enum ColonyService {
                              agentId: json["role_id"] as? String, agentName: json["role_name"] as? String,
                              confidence: json["confidence"] as? Double,
                              workedSeconds: json["worked_s"] as? Double,
-                             stepCount: (json["steps"] as? [Any])?.count ?? 0)
+                             stepCount: (json["steps"] as? [Any])?.count ?? 0,
+                             sources: ColonySource.from(steps: json["steps"]))
     }
 
     /// Uploads a file into the workspace and returns its attachment id. Colony reads files up to its own limit.

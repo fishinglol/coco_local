@@ -10,6 +10,8 @@ enum MDBlock {
     case listItem(prefix: String, text: String, indent: Int)
     case quote(text: String)
     case rule
+    /// A pipe table: header cells and body rows (rows are padded to the header's width).
+    case table(header: [String], rows: [[String]])
 }
 
 // MARK: - Parser (Foundation only)
@@ -23,17 +25,34 @@ enum ChatMarkdown {
         while i < lines.count {
             let line = lines[i]
 
-            // Fenced code block
-            if line.hasPrefix("```") {
-                let lang = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            // Fenced code block. Like CommonMark: it closes only on a bare fence at least as long as the
+            // opening one, so a ```` block can hold ``` lines (an agent showing a file that has code blocks).
+            if let fence = fenceOpening(line) {
+                let lang = String(line.dropFirst(fence.count)).trimmingCharacters(in: .whitespaces)
                 var code: [String] = []
                 i += 1
-                while i < lines.count && !lines[i].hasPrefix("```") {
+                while i < lines.count && !isClosingFence(lines[i], matching: fence) {
                     code.append(lines[i])
                     i += 1
                 }
                 blocks.append(.codeBlock(lang: lang, code: code.joined(separator: "\n")))
                 i += 1
+                continue
+            }
+
+            // Pipe table: a row with "|" followed by a separator row like |---|:--:|
+            if i + 1 < lines.count, isTableStart(lines, i) {
+                let header = tableCells(line)
+                var rows: [[String]] = []
+                i += 2
+                while i < lines.count, lines[i].contains("|"),
+                      !lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
+                    var cells = tableCells(lines[i])
+                    while cells.count < header.count { cells.append("") }
+                    rows.append(Array(cells.prefix(header.count)))
+                    i += 1
+                }
+                blocks.append(.table(header: header, rows: rows))
                 continue
             }
 
@@ -102,7 +121,8 @@ enum ChatMarkdown {
                 let nextStripped = next.trimmingCharacters(in: .whitespaces)
                 if nextStripped.isEmpty { break }
                 if next.hasPrefix("#") { break }
-                if next.hasPrefix("```") { break }
+                if fenceOpening(next) != nil { break }
+                if isTableStart(lines, i) { break }
                 if nextStripped.hasPrefix("> ") || nextStripped == ">" { break }
                 if nextStripped.hasPrefix("- ") || nextStripped.hasPrefix("* ") || nextStripped.hasPrefix("+ ") { break }
                 if nextStripped == "---" || nextStripped == "***" || nextStripped == "___" { break }
@@ -114,5 +134,33 @@ enum ChatMarkdown {
             blocks.append(.paragraph(text: paragraphLines.joined(separator: "\n")))
         }
         return blocks
+    }
+
+    /// "```" / "````" / "~~~" at the start of a line: the fence text itself, nil when the line is not a fence.
+    private static func fenceOpening(_ line: String) -> String? {
+        for mark in ["`", "~"] {
+            let n = line.prefix(while: { String($0) == mark }).count
+            if n >= 3 { return String(repeating: mark, count: n) }
+        }
+        return nil
+    }
+
+    private static func isClosingFence(_ line: String, matching fence: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard let mark = fence.first, t.count >= fence.count else { return false }
+        return t.allSatisfy { $0 == mark }
+    }
+
+    private static func isTableStart(_ lines: [String], _ i: Int) -> Bool {
+        guard i + 1 < lines.count, lines[i].contains("|") else { return false }
+        let sep = lines[i + 1].trimmingCharacters(in: .whitespaces)
+        return sep.contains("-") && sep.contains("|") && sep.allSatisfy { "|-: ".contains($0) }
+    }
+
+    private static func tableCells(_ line: String) -> [String] {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        return t.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 }

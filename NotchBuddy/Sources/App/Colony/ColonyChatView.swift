@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import ApplicationServices
 
 // MARK: - Colony chat: group chat (# mix) + one direct chat per agent
 
@@ -25,6 +27,12 @@ struct ColonyChatView: View {
     /// File dropped on the island, waiting to be sent along with the next message.
     private var pendingFile: (name: String, url: URL)? {
         if case .file(let name, let url)? = state.promptContext, let url { return (name, url) }
+        return nil
+    }
+
+    /// Window Mochi was dropped on, waiting to be sent along with the next message.
+    private var pendingWindow: (app: String, title: String, url: String?)? {
+        if case .window(let app, let title, let url)? = state.promptContext { return (app, title, url) }
         return nil
     }
 
@@ -287,6 +295,17 @@ struct ColonyChatView: View {
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Color.white.opacity(0.07)).clipShape(Capsule())
             }
+            if let w = pendingWindow {
+                HStack(spacing: 5) {
+                    Image(systemName: "macwindow").font(.system(size: 10))
+                    Text(w.title.isEmpty ? w.app : "\(w.app) · \(w.title)").font(.system(size: 10.5)).lineLimit(1)
+                    Button { state.promptContext = nil } label: { Image(systemName: "xmark").font(.system(size: 8)) }
+                        .buttonStyle(.plain)
+                }
+                .foregroundColor(Color(hex: "#B9BDC4"))
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.white.opacity(0.07)).clipShape(Capsule())
+            }
             ColonyComposer(placeholder: room == "auto" ? "Message the team…" : "Message \(currentAgent?.name ?? "agent")…",
                            commands: store.commands, canSend: workspaceId != nil, onSend: send)
         }
@@ -295,6 +314,16 @@ struct ColonyChatView: View {
     // MARK: Send
 
     private func send(_ q: String) {
+        if let w = pendingWindow {
+            // The window's text goes along as a small text file, like a dropped file, so the bubble stays short.
+            state.promptContext = nil
+            Task { @MainActor in
+                let file = ColonyWindowContext.file(app: w.app, title: w.title, url: w.url)
+                store.send(q, file: file)
+                if let file { try? await Task.sleep(nanoseconds: 60_000_000_000); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+            }
+            return
+        }
         store.send(q, file: pendingFile?.url)
         if pendingFile != nil { state.promptContext = nil }
     }
@@ -331,6 +360,7 @@ private struct ColonyBubble: View, Equatable {
                     Text("Worked for \(Int(s))s" + (m.stepCount > 0 ? " · \(m.stepCount) steps" : ""))
                         .font(.system(size: 10.5)).foregroundColor(Color(hex: "#6B7078"))
                 }
+                if !m.sources.isEmpty { ColonySourcesChip(sources: m.sources).padding(.top, 2) }
             }
         }
     }
@@ -450,5 +480,178 @@ private struct ColonyComposer: View {
         guard !q.isEmpty, canSend else { return }
         text = ""
         onSend(q)
+    }
+}
+
+
+// MARK: - Window context for Colony agents
+
+/// What an agent gets when Mochi is dropped on a window: app, title, URL and the text on screen.
+/// Browsers give the page text through AppleScript (Safari needs "Allow JavaScript from Apple Events",
+/// Chrome/Edge/Arc "Allow JavaScript from Apple Events" in the View > Developer menu); every other app,
+/// and a browser that refuses, is read through Accessibility.
+enum ColonyWindowContext {
+    private static let maxChars = 24_000
+    private static let pageScripts: [String: String] = [
+        "com.apple.Safari": "tell application \"Safari\" to return do JavaScript \"document.body.innerText\" in current tab of front window",
+        "com.google.Chrome": "tell application \"Google Chrome\" to return execute active tab of front window javascript \"document.body.innerText\"",
+        "company.thebrowser.Browser": "tell application \"Arc\" to return execute active tab of front window javascript \"document.body.innerText\"",
+        "com.microsoft.edgemac": "tell application \"Microsoft Edge\" to return execute active tab of front window javascript \"document.body.innerText\"",
+    ]
+
+    /// Writes the context to a temporary .txt and returns it (the caller removes its folder).
+    static func file(app: String, title: String, url: String?) -> URL? {
+        var out = "Window context (the window the user dropped Mochi on)\nApp: \(app)\nWindow: \(title)\n"
+        if let url { out += "URL: \(url)\n" }
+        let running = NSWorkspace.shared.runningApplications
+            .first { $0.localizedName == app && $0.activationPolicy == .regular }
+        if let running, var text = pageText(of: running) ?? accessibilityText(of: running), !text.isEmpty {
+            if text.count > maxChars { text = String(text.prefix(maxChars)) + "\n[truncated]" }
+            out += "\nText on screen:\n\(text)\n"
+        } else if !AXIsProcessTrusted() {
+            // Asks macOS to show the Accessibility prompt; a rebuilt, unsigned Coucou has to be allowed again.
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            out += "\n(Coucou has no Accessibility permission, so the window text could not be read.)\n"
+        } else {
+            out += "\n(The text of the window could not be read.)\n"
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("colony-window-\(UUID().uuidString)")
+        let name = "Window - \(app).txt".replacingOccurrences(of: "/", with: "-")
+        let file = dir.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try out.write(to: file, atomically: true, encoding: .utf8)
+            return file
+        } catch { return nil }
+    }
+
+    private static func pageText(of app: NSRunningApplication) -> String? {
+        guard let id = app.bundleIdentifier, let script = pageScripts[id] else { return nil }
+        var error: NSDictionary?
+        let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+        guard error == nil, let s = result?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        return s
+    }
+
+    private static func accessibilityText(of app: NSRunningApplication) -> String? {
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0)
+        // Electron and Chromium apps (Claude desktop, Chrome, VS Code, Slack) build their accessibility tree only on request.
+        AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &ref) == .success
+                || AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &ref) == .success,
+              let ref else { return nil }
+        var lines: [String] = []
+        var chars = 0
+        var visited = 0
+        func walk(_ el: AXUIElement, depth: Int) {
+            guard depth < 14, visited < 4000, chars < maxChars else { return }
+            visited += 1
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
+            if let r = role as? String, ["AXStaticText", "AXTextArea", "AXTextField"].contains(r) {
+                var value: CFTypeRef?
+                if AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &value) == .success,
+                   let s = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty, s != lines.last {
+                    lines.append(s)
+                    chars += s.count + 1
+                }
+            }
+            var kids: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &kids) == .success,
+               let children = kids as? [AXUIElement] {
+                for c in children { walk(c, depth: depth + 1) }
+            }
+        }
+        // swiftlint:disable:next force_cast
+        walk(ref as! AXUIElement, depth: 0)
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+}
+
+
+// MARK: - Sources
+
+/// "🌐 15 sources" under a reply that used the web; click lists the pages the agent really got, each opens in the browser.
+private struct ColonySourcesChip: View {
+    let sources: [ColonySource]
+    @State private var open = false
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 5) {
+                HStack(spacing: -4) {
+                    ForEach(Array(sources.prefix(3))) { s in
+                        Text(String((s.site.first ?? "?").uppercased()))
+                            .font(.system(size: 7.5, weight: .bold)).foregroundColor(Color(hex: "#0B0C0E"))
+                            .frame(width: 14, height: 14).background(Color(hex: "#D7DAE0")).clipShape(Circle())
+                            .overlay(Circle().stroke(Color(hex: "#1B1C1F"), lineWidth: 1))
+                    }
+                }
+                Image(systemName: "globe").font(.system(size: 9.5))
+                Text("\(sources.count) source\(sources.count == 1 ? "" : "s")").font(.system(size: 10.5, weight: .medium))
+            }
+            .foregroundColor(Color(hex: "#B9BDC4"))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.white.opacity(0.08)).clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) { ColonySourcesList(sources: sources) }
+    }
+}
+
+private struct ColonySourcesList: View {
+    let sources: [ColonySource]
+
+    /// Sources in the order of the searches that found them.
+    private var queries: [String] {
+        var seen: [String] = []
+        for s in sources where !seen.contains(s.query) { seen.append(s.query) }
+        return seen
+    }
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Sources").font(.system(size: 12.5, weight: .semibold)).foregroundColor(Color(hex: "#F1F2F4"))
+                ForEach(queries, id: \.self) { q in
+                    if !q.isEmpty {
+                        Text("Results for “\(q)”").font(.system(size: 10.5)).foregroundColor(Color(hex: "#8A8F98"))
+                    }
+                    ForEach(sources.filter { $0.query == q }) { row($0) }
+                }
+            }
+            .padding(14)
+        }
+        .frame(width: 340, height: min(CGFloat(sources.count) * 78 + 70, 420))
+        .background(Color(hex: "#1B1C1F"))
+    }
+
+    private func row(_ s: ColonySource) -> some View {
+        Button {
+            if let u = URL(string: s.url) { NSWorkspace.shared.open(u) }
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(String((s.site.first ?? "?").uppercased()))
+                        .font(.system(size: 8, weight: .bold)).foregroundColor(Color(hex: "#0B0C0E"))
+                        .frame(width: 15, height: 15).background(Color(hex: "#D7DAE0")).clipShape(Circle())
+                    Text(s.site).font(.system(size: 10.5)).foregroundColor(Color(hex: "#8A8F98")).lineLimit(1)
+                }
+                Text(s.title).font(.system(size: 12, weight: .medium)).foregroundColor(Color(hex: "#F1F2F4"))
+                    .lineLimit(2).multilineTextAlignment(.leading)
+                if !s.snippet.isEmpty {
+                    Text(s.snippet).font(.system(size: 10.5)).foregroundColor(Color(hex: "#8A8F98"))
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(Color.white.opacity(0.05)).clipShape(RoundedRectangle(cornerRadius: 10))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(s.url)
     }
 }
