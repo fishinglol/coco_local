@@ -29,6 +29,7 @@ final class ColonyStore: ObservableObject {
     private var nativeTurns = 0
     @Published var offline = false
     @Published var errorText: String?
+    @Published var contexts: [String: ColonyContext] = [:]     // agent id -> how full its context is
     @Published var activity = ColonyActivity()
     /// A reminder an agent set (OpenClaw's `cron`) that just fired; shown in the chat until tapped away.
     @Published var reminder: String?
@@ -80,6 +81,13 @@ final class ColonyStore: ObservableObject {
         let fresh = await ColonyService.loadMessages(workspaceId: ws.id)
         // Keep messages still being sent (not on the server yet) instead of dropping them on a refresh.
         messages = busyRooms.isEmpty ? fresh : fresh + messages.filter { m in !fresh.contains { $0.id == m.id } && m.isLocalPending }
+        await refreshContexts()
+    }
+
+    func refreshContexts() async {
+        guard let ws = workspaceId else { return }
+        let fresh = await ColonyService.fetchContext(workspaceId: ws)
+        if !fresh.isEmpty, fresh != contexts { contexts = fresh }
     }
 
     func selectWorkspace(_ id: String) {
@@ -161,9 +169,12 @@ final class ColonyStore: ObservableObject {
                 var ids: [String] = []
                 if let file { ids.append(try await ColonyService.upload(workspaceId: ws, fileURL: file)) }
                 if UserDefaults.standard.object(forKey: "colonyDirectGateway") as? Bool ?? true {
+                    if target == "auto", q.hasPrefix("/"), ids.isEmpty, !agents.isEmpty {
+                        if await runCommandForTeam(q, workspaceId: ws) { await reload(); return }
+                    }
                     if target == "auto" { live.status = "Choosing who answers…" }       // the decider runs inside prepare
                     if let turn = await ColonyService.prepareTurn(workspaceId: ws, text: q, room: target, attachments: ids) {
-                        // in an agent's own chat a slash command goes as typed; in the group chat there is no command menu
+                        // in an agent's own chat a slash command goes as typed
                         if await runDirect(turn, room: target, text: target != "auto" && q.hasPrefix("/") ? q : turn.message) {
                             busyRooms.remove(target)
                             await reload()
@@ -182,9 +193,13 @@ final class ColonyStore: ObservableObject {
 
     /// One turn with the Gateway: what it reports (status, tools, reply as it is written, questions) goes straight to the chat.
     /// False when the Gateway could not be reached at all (nothing happened: the caller sends it the normal way).
-    private func runDirect(_ turn: ColonyService.NativeTurn, room: String, text: String) async -> Bool {
+    private func runDirect(_ turn: ColonyService.NativeTurn, room: String, text: String,
+                           finish: ((String, Bool) -> Void)? = nil) async -> Bool {
         nativeTurns += 1
-        defer { nativeTurns -= 1; live.partial = nil; live.status = nil }
+        defer {
+            nativeTurns -= 1; live.partial = nil; live.status = nil
+            Task { await refreshContexts() }
+        }
         var reply = ""
         var failed = false
         var heardFromGateway = false
@@ -214,8 +229,33 @@ final class ColonyStore: ObservableObject {
             if heardFromGateway { errorText = error.localizedDescription }
         }
         clearGatewayApproval()
-        await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed)
+        if let finish { finish(reply, failed) }       // the caller closes the turn (a command for the whole team)
+        else { await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed) }
         return heardFromGateway
+    }
+
+    /// A slash command in the group chat goes to every agent (each in its group session), one after another, and the
+    /// answers are saved as one message: "/new" starts the whole team over, "/status" shows each agent.
+    /// False when no agent could be reached (the caller falls back to the normal way).
+    private func runCommandForTeam(_ command: String, workspaceId ws: String) async -> Bool {
+        var answers: [(turn: ColonyService.NativeTurn, reply: String, failed: Bool)] = []
+        for a in agents {
+            guard let turn = await ColonyService.prepareTurn(workspaceId: ws, text: command, room: "auto", agent: a.id) else { continue }
+            var reply = "", failed = true
+            _ = await runDirect(turn, room: "auto", text: command) { r, f in reply = r; failed = f }
+            answers.append((turn, reply, failed))
+        }
+        let ok = answers.filter { !$0.failed && !$0.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !answers.isEmpty else { return false }
+        for a in answers {      // only the first answer carries the saved message; the others are closed
+            if let first = ok.first, first.turn.turnId == a.turn.turnId {
+                let text = ok.map { "**\($0.turn.roleName)**\n\($0.reply)" }.joined(separator: "\n\n")
+                await ColonyService.finishTurn(id: a.turn.turnId, reply: text, failed: false)
+            } else {
+                await ColonyService.finishTurn(id: a.turn.turnId, reply: nil, failed: true)
+            }
+        }
+        return true
     }
 
     private static func statusText(_ phase: String) -> String {

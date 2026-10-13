@@ -2738,7 +2738,12 @@ def main():
         pass  # Always exit cleanly — never block the agent
 
     # Gemini CLI, Antigravity, Muse Code and Copilot CLI expect {} on stdout (empty = no decision)
-    if agent in ('gemini', 'antigravity', 'muse', 'copilot'):
+    # Antigravity fails closed on PreToolUse: `decision` is required there, so {} blocks every tool call.
+    # "ask" = Antigravity's own prompt (respects Always Allow); Coucou never auto-approves.
+    if agent == 'antigravity' and event == 'PreToolUse':
+        sys.stdout.write('{"decision":"ask"}\\n')
+        sys.stdout.flush()
+    elif agent in ('gemini', 'antigravity', 'muse', 'copilot'):
         sys.stdout.write('{}\\n')
         sys.stdout.flush()
 
@@ -3028,7 +3033,12 @@ def main():
         pass  # Always exit cleanly — never block the agent
 
     # Gemini CLI, Antigravity, Muse Code and Copilot CLI expect {} on stdout (empty = no decision)
-    if agent in ('gemini', 'antigravity', 'muse', 'copilot'):
+    # Antigravity fails closed on PreToolUse: `decision` is required there, so {} blocks every tool call.
+    # "ask" = Antigravity's own prompt (respects Always Allow); Coucou never auto-approves.
+    if agent == 'antigravity' and event == 'PreToolUse':
+        sys.stdout.write('{"decision":"ask"}\\n')
+        sys.stdout.flush()
+    elif agent in ('gemini', 'antigravity', 'muse', 'copilot'):
         sys.stdout.write('{}\\n')
         sys.stdout.flush()
 

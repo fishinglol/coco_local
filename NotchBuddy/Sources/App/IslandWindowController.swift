@@ -634,6 +634,12 @@ final class IslandWindowController: NSWindowController {
             Task { @MainActor in self?.foldOnActivityElsewhere() }
         }
 
+        // Display plugged/unplugged or rearranged: macOS shifts the global coordinates, so re-anchor.
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.reanchorToScreen()
+        }
+
         // Hook server expand requests (alerts only)
         NotificationCenter.default.addObserver(forName: .hookExpand, object: nil, queue: .main) { [weak self] note in
             guard let self, let view = note.object as? IslandView else { return }
@@ -1095,6 +1101,24 @@ final class IslandWindowController: NSWindowController {
         let dx = windowPoint.x - botX
         let dy = windowPoint.y - botY
         return dx*dx + dy*dy <= radius * radius
+    }
+
+    /// Put the panel back at the top centre of the notch screen (or the main screen without a notch)
+    /// and refresh the notch size; the panel is otherwise placed only once, at launch.
+    private func reanchorToScreen() {
+        guard let panel = islandPanel else { return }
+        let screen = Self.notchScreen() ?? NSScreen.main ?? NSScreen.screens[0]
+        let geometry = Self.screenGeometry(for: screen)
+        notchW = geometry.width
+        notchH = geometry.height
+        hasNotch = geometry.hasNotch
+        panel.notchWidth = notchW
+        panel.notchHeight = notchH
+        AppState.shared.notchWidth = notchW
+        AppState.shared.notchHeight = notchH
+        AppState.shared.hasNotch = hasNotch
+        let sf = screen.frame
+        panel.setFrameOrigin(NSPoint(x: sf.midX - panel.frame.width / 2, y: sf.maxY - panel.frame.height))
     }
 
     // MARK: - Notch detection (static)

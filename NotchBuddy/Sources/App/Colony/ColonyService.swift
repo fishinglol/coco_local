@@ -10,6 +10,17 @@ struct ColonyAgent: Identifiable, Equatable {
     var color: String { ColonyService.color(forAgent: id) }
 }
 
+/// Tokens an agent's session holds against its model's window (`used` is nil before its first turn).
+struct ColonyContext: Equatable {
+    let used: Int?
+    let window: Int
+    var fraction: Double { used.map { min(1, Double($0) / Double(window)) } ?? 0 }
+    var percent: Int { Int((fraction * 100).rounded()) }
+    var label: String { used == nil ? "–" : "\(percent)%" }
+    var detail: String { "\(Self.short(used ?? 0)) of \(Self.short(window)) tokens" }
+    private static func short(_ n: Int) -> String { n >= 1000 ? "\(Int((Double(n) / 1000).rounded()))k" : "\(n)" }
+}
+
 struct ColonyModel: Identifiable, Equatable {
     let id: String
     let label: String
@@ -160,6 +171,13 @@ enum ColonyService {
         }
     }
 
+    /// Whether Composio (the connector that reaches Gmail, Slack and so on) is set up and on in Colony.
+    static func composioConnected() async -> Bool {
+        let j = await get("/api/mcp")
+        let server = (j?["servers"] as? [String: Any])?["composio"] as? [String: Any]
+        return server != nil && server?["enabled"] as? Bool ?? true
+    }
+
     /// What an agent is as files (persona, identity, its own memory) plus the team's shared memory.
     static func fetchRoleFiles(workspaceId: String, roleId: String) async -> [String: Any]? {
         await get("/api/roles/\(roleId)/files?workspace_id=\(workspaceId)", timeout: 10)
@@ -210,6 +228,30 @@ enum ColonyService {
                           userInfo: [NSLocalizedDescriptionKey: j?["detail"] as? String ?? "The skill couldn't be changed."])
         }
         return skills(from: j)
+    }
+
+    /// How full each agent's context is: the model's window from Colony, the tokens its session holds from the Gateway
+    /// (turns the app runs itself are only known there); Colony's own count is the fallback.
+    static func fetchContext(workspaceId: String) async -> [String: ColonyContext] {
+        guard let j = await get("/api/context?workspace_id=\(workspaceId)"), let rows = j["agents"] as? [[String: Any]] else { return [:] }
+        var held: [String: (at: Double, tokens: Int)] = [:]      // gateway agent id -> newest session's tokens
+        if let r = try? await GatewayClient.shared.request("sessions.list", ["limit": 200]),
+           let list = r["sessions"] as? [[String: Any]] {
+            for row in list {
+                guard let key = row["key"] as? String, key.hasPrefix("agent:"),
+                      let tokens = (row["totalTokens"] as? NSNumber)?.intValue else { continue }
+                let agent = String(key.dropFirst(6).prefix { $0 != ":" })
+                let at = (row["updatedAt"] as? NSNumber)?.doubleValue ?? 0
+                if at >= held[agent]?.at ?? -1 { held[agent] = (at, tokens) }
+            }
+        }
+        var out: [String: ColonyContext] = [:]
+        for r in rows {
+            guard let id = r["role_id"] as? String, let window = (r["window"] as? NSNumber)?.intValue, window > 0 else { continue }
+            let used = held["\(workspaceId)-\(id)".lowercased()]?.tokens ?? (r["used_tokens"] as? NSNumber)?.intValue
+            out[id] = ColonyContext(used: used, window: window)
+        }
+        return out
     }
 
     static func fetchModels() async -> [ColonyModel] {
@@ -293,9 +335,10 @@ enum ColonyService {
 
     /// Sets the agent up and returns what to send the Gateway; nil when this message should take the normal path.
     /// `room` is "auto" (the group chat: the decider picks who answers) or an agent's id.
-    static func prepareTurn(workspaceId: String, text: String, room: String, attachments: [String] = []) async -> NativeTurn? {
+    static func prepareTurn(workspaceId: String, text: String, room: String, attachments: [String] = [],
+                            agent: String? = nil) async -> NativeTurn? {
         var body: [String: Any] = ["workspace_id": workspaceId, "message": text, "channel": room]
-        if room != "auto" { body["role_id"] = room }
+        if let agent = agent ?? (room != "auto" ? room : nil) { body["role_id"] = agent }     // `agent` in the group chat: no decider
         if !attachments.isEmpty { body["attachments"] = attachments }
         guard let j = try? await post("/api/turns/prepare", body, timeout: 240),
               j["native"] as? Bool == true, let turn = j["turn_id"] as? String, let agent = j["agent_id"] as? String,

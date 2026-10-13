@@ -446,6 +446,9 @@ struct CountdownBar: View {
 
 struct IslandContentView: View {
     @ObservedObject var state: AppState
+    /// Pages other than the active one are built after the open animation, one per tick, so opening the
+    /// island does not build every page (the chat included) in the first frame.
+    @State private var built: Set<IslandView> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -455,7 +458,7 @@ struct IslandContentView: View {
                 .animation(.easeInOut(duration: 0.2), value: state.view == .confused)
 
             ZStack {
-                ForEach(IslandView.allCases, id: \.self) { v in
+                ForEach(IslandView.allCases.filter { $0 == state.view || built.contains($0) }, id: \.self) { v in
                     let active = state.view == v
                     // Views that fill available height instead of the fixed 98pt content frame:
                     // chat (prompt) is always flexible; mail is flexible only when active so
@@ -480,6 +483,14 @@ struct IslandContentView: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .foregroundColor(Color(hex: "#F5F6F8"))
+        .task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            for v in IslandView.allCases {
+                if Task.isCancelled { return }
+                built.insert(v)
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
+        }
     }
 }
 

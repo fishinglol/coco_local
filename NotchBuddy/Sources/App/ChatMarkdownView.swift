@@ -2,12 +2,28 @@ import SwiftUI
 
 // MARK: - Markdown renderer for chat assistant messages
 
+/// Parsed blocks and inline text, kept per message text: switching rooms rebuilds bubbles, and parsing
+/// Markdown again for each one was what made the switch stutter.
+private enum MarkdownCache {
+    final class Blocks { let value: [MDBlock]; init(_ v: [MDBlock]) { value = v } }
+    final class Inline { let value: AttributedString; init(_ v: AttributedString) { value = v } }
+    static let blocks: NSCache<NSString, Blocks> = { let c = NSCache<NSString, Blocks>(); c.countLimit = 300; return c }()
+    static let inline: NSCache<NSString, Inline> = { let c = NSCache<NSString, Inline>(); c.countLimit = 2000; return c }()
+}
+
 struct ChatMarkdownView: View {
     let markdown: String
 
+    private var blocks: [MDBlock] {
+        if let hit = MarkdownCache.blocks.object(forKey: markdown as NSString) { return hit.value }
+        let parsed = ChatMarkdown.parse(markdown)
+        MarkdownCache.blocks.setObject(MarkdownCache.Blocks(parsed), forKey: markdown as NSString)
+        return parsed
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(ChatMarkdown.parse(markdown).enumerated()), id: \.offset) { _, block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
         }
@@ -86,6 +102,13 @@ struct ChatMarkdownView: View {
     /// the normal case in Thai (no spaces): the asterisks then show up literally. Bold is split on `**` here
     /// first, the rest (code, links, italics) still goes through the Markdown parser.
     private func inlineAttributed(_ text: String) -> AttributedString {
+        if let hit = MarkdownCache.inline.object(forKey: text as NSString) { return hit.value }
+        let out = buildInline(text)
+        MarkdownCache.inline.setObject(MarkdownCache.Inline(out), forKey: text as NSString)
+        return out
+    }
+
+    private func buildInline(_ text: String) -> AttributedString {
         let parts = text.components(separatedBy: "**")
         guard parts.count >= 3, parts.count % 2 == 1 else { return parseInline(text) }
         var out = AttributedString()

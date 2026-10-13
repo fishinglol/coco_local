@@ -24,6 +24,8 @@ struct ColonySettingsView: View {
     @State private var gatewayStatus = "Not tested"
     @State private var githubURL = ""
     @State private var downloading = false
+    @State private var composio: Bool?
+    @State private var newApp = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -127,6 +129,7 @@ struct ColonySettingsView: View {
         .onChange(of: tab) { t in
             if t == .memory { Task { await loadFiles() } }
             if t == .skills { Task { await loadSkills() } }
+            if t == .tools { Task { composio = await ColonyService.composioConnected() } }
         }
         .onChange(of: selectedId) { _ in
             files = nil; skills = nil
@@ -329,7 +332,74 @@ struct ColonySettingsView: View {
                 set: { draft["web_search"] = $0 }))
             Text("Tools need a model that can use them, and a project folder set on the workspace.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
+            Divider()
+            appsSection
         }
+        .task { composio = await ColonyService.composioConnected() }
+    }
+
+    // MARK: Apps (Gmail, Slack, … through Composio)
+
+    private var appsSection: some View {
+        let tools = draft["tools"] as? [String: Any] ?? [:]
+        let apps = tools["mcp_apps"] as? [String] ?? []
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Apps").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(composio == nil ? "Checking…" : (composio! ? "Composio connected" : "Composio not connected"))
+                    .font(.system(size: 11)).foregroundColor(composio == true ? .green : .secondary)
+            }
+            if composio == false {
+                Text("Add your Composio key in Colony first (POST /api/mcp/composio). Then agents can use Gmail, Slack, Notion and 1,000+ other apps.")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            HStack {
+                Text("This agent may use apps").font(.system(size: 12)).foregroundColor(.secondary)
+                Picker("", selection: Binding(
+                    get: { tools["mcp"] as? String ?? "off" },
+                    set: { v in var t = tools; t["mcp"] = v; draft["tools"] = t })) {
+                    Text("Off").tag("off")
+                    Text("Ask first").tag("ask")
+                    Text("Allow").tag("allow")
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 220)
+            }
+            if (tools["mcp"] as? String ?? "off") != "off" {
+                Text(apps.isEmpty ? "Any app. Add names below to limit this agent to those apps."
+                                  : "Only these apps (the agent is told to stay within them):")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+                ForEach(apps, id: \.self) { name in
+                    HStack {
+                        Text(name).font(.system(size: 12))
+                        Spacer()
+                        Button { setApps(apps.filter { $0 != name }) } label: { Image(systemName: "xmark.circle") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                HStack {
+                    TextField("Gmail, Slack, Notion…", text: $newApp)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                        .onSubmit { addApp(apps) }
+                    Button("Add") { addApp(apps) }
+                }
+                Text("Each app asks you to sign in once, the first time an agent uses it.")
+                    .font(.system(size: 11)).foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func setApps(_ apps: [String]) {
+        var t = draft["tools"] as? [String: Any] ?? [:]
+        t["mcp_apps"] = apps
+        draft["tools"] = t
+    }
+
+    private func addApp(_ apps: [String]) {
+        let name = newApp.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !apps.contains(name) else { return }
+        setApps(apps + [name])
+        newApp = ""
     }
 
     private func toolToggle(_ title: String, key: String, on: String) -> some View {

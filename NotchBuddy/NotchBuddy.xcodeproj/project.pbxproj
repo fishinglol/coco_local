@@ -304,7 +304,7 @@
 		1B2EED5205DD7161E51BE1E1 /* IntroView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntroView.swift; sourceTree = "<group>"; };
 		1BE21C2B315D37AA70ED45E9 /* SoundEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundEngine.swift; sourceTree = "<group>"; };
 		21B710512DB99390EC564487 /* ServiceLiveDetail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceLiveDetail.swift; sourceTree = "<group>"; };
-		2341F3A89A60C4FDA341CD27 /* ColonyHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColonyHomeView.swift; sourceTree = "<group>"; };
+		2341F3A89A60C4FDA341CD27 /* ColonyHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/ColonyHomeView.swift; sourceTree = "<group>"; };
 		265262A422C270C1798F4A80 /* MochiLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiLive.swift; sourceTree = "<group>"; };
 		28323DC20034A281F6829884 /* CloudProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudProbe.swift; sourceTree = "<group>"; };
 		29E156CF1C215B8FE713B3A0 /* TurnShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnShare.swift; sourceTree = "<group>"; };
@@ -324,12 +324,12 @@
 		5108F622EF0C553F053716C2 /* SessionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStatus.swift; sourceTree = "<group>"; };
 		5C3E2269A202B640E7F3B5E0 /* CoucouWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoucouWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		5C406C508A86E215B3CBE3FC /* CoucouControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoucouControl.swift; sourceTree = "<group>"; };
-		6018F508A8C341459472EDA3 /* ColonySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColonySettingsView.swift; sourceTree = "<group>"; };
+		6018F508A8C341459472EDA3 /* ColonySettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/ColonySettingsView.swift; sourceTree = "<group>"; };
 		60401D1023D17C3FD30D7113 /* PhoneAssets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = PhoneAssets.xcassets; sourceTree = "<group>"; };
 		61B5FDDE03F5F711146937E2 /* ResendPoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResendPoller.swift; sourceTree = "<group>"; };
 		62CF42AE7611EF212CA0458F /* ShortcutsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsSettingsView.swift; sourceTree = "<group>"; };
 		65F64746B2740D5FE26B7E5A /* ServiceDetail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceDetail.swift; sourceTree = "<group>"; };
-		665D1C586FEC7CE5A9D4D710 /* ColonyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColonyService.swift; sourceTree = "<group>"; };
+		665D1C586FEC7CE5A9D4D710 /* ColonyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/ColonyService.swift; sourceTree = "<group>"; };
 		66E6F5FC81429871B6F766A8 /* BotEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotEngine.swift; sourceTree = "<group>"; };
 		6762C38A8952A90F394EDFE4 /* LinkTestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkTestView.swift; sourceTree = "<group>"; };
 		681E15F99FCF1E60C2553004 /* AppleStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleStyle.swift; sourceTree = "<group>"; };
@@ -357,8 +357,8 @@
 		9AF705275522F99CAE7E1429 /* ServiceStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceStatus.swift; sourceTree = "<group>"; };
 		9B66D0C664FB9FF74517AAF5 /* MacStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacStubs.swift; sourceTree = "<group>"; };
 		9F6D7015D6A77AA59323C0E7 /* AppLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLog.swift; sourceTree = "<group>"; };
-		A03CA432AECFDBD6905FC945 /* ColonyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColonyStore.swift; sourceTree = "<group>"; };
-		F3DBBE6BDEF825827738D5B1 /* GatewayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayClient.swift; sourceTree = "<group>"; };
+		A03CA432AECFDBD6905FC945 /* ColonyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/ColonyStore.swift; sourceTree = "<group>"; };
+		F3DBBE6BDEF825827738D5B1 /* GatewayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/GatewayClient.swift; sourceTree = "<group>"; };
 		A14A61070D293AB4BBA303F7 /* NotchBuddy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotchBuddy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A29F4C0B02BE91654D02AA0C /* BotCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotCanvasView.swift; sourceTree = "<group>"; };
 		A5DC0954D23B69B247578437 /* question.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = question.wav; sourceTree = "<group>"; };
@@ -392,7 +392,7 @@
 		DD426E81DF79CA79888059D9 /* ApprovalRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalRelay.swift; sourceTree = "<group>"; };
 		DDB831F5623E699A2506698E /* NotificationViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationViewController.swift; sourceTree = "<group>"; };
 		DE18399D1CD69468CCF57966 /* MochiActivityState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiActivityState.swift; sourceTree = "<group>"; };
-		DF71F80A7D39EADB45C0502B /* ColonyChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColonyChatView.swift; sourceTree = "<group>"; };
+		DF71F80A7D39EADB45C0502B /* ColonyChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Colony/ColonyChatView.swift; sourceTree = "<group>"; };
 		E18E74B3586BC0861C69E70A /* InstructionComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstructionComposer.swift; sourceTree = "<group>"; };
 		E6AAC67875F84A862BC2A9AF /* ServiceDetailRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceDetailRunner.swift; sourceTree = "<group>"; };
 		E84E5D91129352E8A1D32AA4 /* MochiOutfitDrawing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiOutfitDrawing.swift; sourceTree = "<group>"; };

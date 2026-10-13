@@ -28,7 +28,16 @@ struct ColonyChatView: View {
         return nil
     }
 
+    /// The chat is always laid out at the height the island is about to have (island height minus the header
+    /// and its padding) and the island, which clips it, grows over it. Without this the feed is resized on
+    /// every frame of the open animation and builds its bubbles while it is happening.
     var body: some View {
+        Color.clear.overlay(alignment: .top) {
+            content.frame(height: ChatHeight.current(coucouCount: state.chatHistory.count) - 52)
+        }
+    }
+
+    private var content: some View {
         ZStack(alignment: .leading) {
             CardBackground(wash: .indigo)
             VStack(alignment: .leading, spacing: 6) {
@@ -146,10 +155,10 @@ struct ColonyChatView: View {
                             ColonyBubble(m: m, showName: room == "auto").equatable().id(m.id)
                         }
                         if busyRooms.contains(room) {
-                            LiveBubble(live: store.live, room: room) { proxy.scrollTo("live", anchor: .bottom) }
+                            LiveBubble(live: store.live, room: room) { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                         if busyRooms.contains(room) {
-                            LiveTyping(live: store.live).id("typing")
+                            LiveTyping(live: store.live)
                         }
                         if let e = errorText {
                             Text(e).font(.system(size: 11)).foregroundColor(Color(hex: "#FF8D97"))
@@ -162,17 +171,18 @@ struct ColonyChatView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        // Always the last child: scrolling to it lands on the true end however tall the bubbles are.
+                        Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding(.vertical, 2)
                 }
-                .onChange(of: visible.count) { _ in
-                    if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
-                // Opening the chat or switching room: start at the newest message, not the oldest. The list is lazy,
-                // so the jump is repeated once after it has laid out.
+                // A message arrived or was sent (yours or an agent's): follow it to the bottom.
+                .onChange(of: visible.count) { _ in jumpToLatest(proxy) }
+                // Opening the chat or switching room: a fresh scroll view per room (no offset carried over from the
+                // other room), starting at the newest message.
                 .onAppear { jumpToLatest(proxy) }
-                .onChange(of: room) { _ in jumpToLatest(proxy) }
-                .onChange(of: busyRooms) { _ in proxy.scrollTo("typing", anchor: .bottom) }
+                .onChange(of: busyRooms) { _ in jumpToLatest(proxy) }
+                .id(room)
             }
             .frame(maxHeight: .infinity)
         }
@@ -181,7 +191,7 @@ struct ColonyChatView: View {
     private func jumpToLatest(_ proxy: ScrollViewProxy) {
         for delay in [0.0, 0.15] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                if let last = visible.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }
@@ -212,8 +222,11 @@ struct ColonyChatView: View {
         HStack {
             Spacer()
             if room == "auto" {
-                chipLabel(color: "#8B8FFB", text: "Colony decides · \(agents.count) agents")
+                // One small dot + percent per agent: enough to see who is getting full.
+                ForEach(agents) { a in contextMeter(a) }
+                chipLabel(color: "#8B8FFB", text: "Colony decides")
             } else if let a = currentAgent {
+                contextMeter(a, wide: true)
                 Menu {
                     ForEach(store.models) { m in
                         Button {
@@ -230,6 +243,23 @@ struct ColonyChatView: View {
             }
         }
         .padding(.horizontal, 10)
+    }
+
+    /// How full an agent's context is: a ring and a percent, amber from 70 %, red from 90 %. The tooltip has the tokens.
+    private func contextMeter(_ a: ColonyAgent, wide: Bool = false) -> some View {
+        let c = store.contexts[a.id]
+        let tint = (c?.fraction ?? 0) >= 0.9 ? "#F87171" : (c?.fraction ?? 0) >= 0.7 ? "#F5A524" : a.color
+        return HStack(spacing: 4) {
+            ZStack {
+                Circle().stroke(Color.white.opacity(0.14), lineWidth: 2)
+                Circle().trim(from: 0, to: c?.fraction ?? 0)
+                    .stroke(Color(hex: tint), style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(-90))
+            }
+            .frame(width: 11, height: 11)
+            Text(wide ? "\(c?.label ?? "–") context" : "\(a.name) \(c?.label ?? "–")")
+                .font(.system(size: 10.5)).foregroundColor(Color(hex: "#7B8089"))
+        }
+        .help(c.map { "\(a.name): \($0.detail)" } ?? "\(a.name): no context yet")
     }
 
     private func chipLabel(color: String, text: String, chevron: Bool = false) -> some View {
@@ -258,7 +288,7 @@ struct ColonyChatView: View {
                 .background(Color.white.opacity(0.07)).clipShape(Capsule())
             }
             ColonyComposer(placeholder: room == "auto" ? "Message the team…" : "Message \(currentAgent?.name ?? "agent")…",
-                           commands: room == "auto" ? [] : store.commands, canSend: workspaceId != nil, onSend: send)
+                           commands: store.commands, canSend: workspaceId != nil, onSend: send)
         }
     }
 
