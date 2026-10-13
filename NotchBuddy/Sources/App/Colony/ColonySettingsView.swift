@@ -330,6 +330,11 @@ struct ColonySettingsView: View {
             Toggle("Search the web", isOn: Binding(
                 get: { draft["web_search"] as? Bool ?? false },
                 set: { draft["web_search"] = $0 }))
+            Toggle("Accept tasks from teammates", isOn: Binding(
+                get: { draft["accepts_handoff"] as? Bool ?? false },
+                set: { draft["accepts_handoff"] = $0 }))
+            Text("When on, a teammate can hand this agent a task in the group chat (a reply ending in @Name). Off: only you can ask it.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
             Text("Tools need a model that can use them, and a project folder set on the workspace.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             Divider()

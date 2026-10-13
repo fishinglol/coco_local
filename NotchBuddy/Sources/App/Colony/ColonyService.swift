@@ -346,6 +346,15 @@ enum ColonyService {
         let permissionMode: String?           // read-only | guarded
     }
 
+    /// A reply that ends with "@Name task": Colony says who takes it next (see native_turn._handoff).
+    struct Handoff {
+        let roleId: String
+        let roleName: String
+        let message: String
+        let from: String
+        let hops: Int
+    }
+
     private static func post(_ path: String, _ body: [String: Any], timeout: TimeInterval) async throws -> [String: Any] {
         guard let url = URL(string: baseURL + path) else { throw URLError(.badURL) }
         var req = URLRequest(url: url, timeoutInterval: timeout)
@@ -363,9 +372,10 @@ enum ColonyService {
     /// Sets the agent up and returns what to send the Gateway; nil when this message should take the normal path.
     /// `room` is "auto" (the group chat: the decider picks who answers) or an agent's id.
     static func prepareTurn(workspaceId: String, text: String, room: String, attachments: [String] = [],
-                            agent: String? = nil) async -> NativeTurn? {
+                            agent: String? = nil, handoff: Handoff? = nil) async -> NativeTurn? {
         var body: [String: Any] = ["workspace_id": workspaceId, "message": text, "channel": room]
         if let agent = agent ?? (room != "auto" ? room : nil) { body["role_id"] = agent }     // `agent` in the group chat: no decider
+        if let handoff { body["role_id"] = handoff.roleId; body["handoff_from"] = handoff.from; body["hops"] = handoff.hops }
         if !attachments.isEmpty { body["attachments"] = attachments }
         guard let j = try? await post("/api/turns/prepare", body, timeout: 240),
               j["native"] as? Bool == true, let turn = j["turn_id"] as? String, let agent = j["agent_id"] as? String,
@@ -377,10 +387,16 @@ enum ColonyService {
     }
 
     /// The Gateway turn is over: Colony saves the reply into the team's conversation.
-    static func finishTurn(id: String, reply: String?, failed: Bool) async {
+    /// Returns the handoff when the reply passes the work on to a teammate who accepts it.
+    @discardableResult
+    static func finishTurn(id: String, reply: String?, failed: Bool) async -> Handoff? {
         var body: [String: Any] = ["turn_id": id, "failed": failed]
         if let reply { body["reply"] = reply }
-        _ = try? await post("/api/turns/finish", body, timeout: 30)
+        guard let j = try? await post("/api/turns/finish", body, timeout: 30),
+              let h = j["handoff"] as? [String: Any], let role = h["role_id"] as? String,
+              let message = h["message"] as? String, let from = h["from"] as? String else { return nil }
+        return Handoff(roleId: role, roleName: h["role_name"] as? String ?? role, message: message, from: from,
+                       hops: h["hops"] as? Int ?? 1)
     }
 
     static func send(workspaceId: String, text: String, channel: String, attachments: [String] = []) async throws -> ColonyMessage {

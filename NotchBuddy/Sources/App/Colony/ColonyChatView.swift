@@ -372,9 +372,16 @@ private struct LiveBubble: View {
     @ObservedObject var live: LiveReply
     let room: String
     let onGrow: () -> Void
+    @State private var lastFollow = Date.distantPast
 
     var body: some View {
-        content.onChange(of: live.partial?.text.count) { _ in onGrow() }
+        // Follow the text down a few times a second, not on every token: a scroll per token fights the reader and, in a
+        // lazy list whose last bubble is still growing, scrolls past the content (the chat looks blank).
+        content.onChange(of: live.partial?.text.count) { _ in
+            guard Date().timeIntervalSince(lastFollow) > 0.4 else { return }
+            lastFollow = Date()
+            onGrow()
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -492,12 +499,36 @@ private struct ColonyComposer: View {
 /// and a browser that refuses, is read through Accessibility.
 enum ColonyWindowContext {
     private static let maxChars = 24_000
+    /// AppleScript per browser; `%@` is the JavaScript run in the front tab.
     private static let pageScripts: [String: String] = [
-        "com.apple.Safari": "tell application \"Safari\" to return do JavaScript \"document.body.innerText\" in current tab of front window",
-        "com.google.Chrome": "tell application \"Google Chrome\" to return execute active tab of front window javascript \"document.body.innerText\"",
-        "company.thebrowser.Browser": "tell application \"Arc\" to return execute active tab of front window javascript \"document.body.innerText\"",
-        "com.microsoft.edgemac": "tell application \"Microsoft Edge\" to return execute active tab of front window javascript \"document.body.innerText\"",
+        "com.apple.Safari": "tell application \"Safari\" to return do JavaScript \"%@\" in current tab of front window",
+        "com.google.Chrome": "tell application \"Google Chrome\" to return execute active tab of front window javascript \"%@\"",
+        "company.thebrowser.Browser": "tell application \"Arc\" to return execute active tab of front window javascript \"%@\"",
+        "com.microsoft.edgemac": "tell application \"Microsoft Edge\" to return execute active tab of front window javascript \"%@\"",
     ]
+
+    /// Google Sheets, Docs and Slides draw their content on a canvas, so the page has no text. Their own export
+    /// endpoint gives it back, and a request made from the page itself carries the user's sign-in.
+    private static func googleExportJS(_ url: String?) -> String? {
+        guard let url, let c = URLComponents(string: url), c.host == "docs.google.com" else { return nil }
+        let parts = c.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "d" else { return nil }
+        let id = parts[2]
+        guard id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" }) else { return nil }
+        var path: String
+        switch parts[0] {
+        case "spreadsheets":
+            path = "/spreadsheets/d/\(id)/export?format=csv"
+            // the open tab: gid is in the fragment or the query
+            let gid = (c.fragment ?? "").split(separator: "=").last.map(String.init)
+                ?? c.queryItems?.first { $0.name == "gid" }?.value
+            if let gid, gid.allSatisfy(\.isNumber) { path += "&gid=" + gid }
+        case "document": path = "/document/d/\(id)/export?format=txt"
+        case "presentation": path = "/presentation/d/\(id)/export?format=txt"
+        default: return nil
+        }
+        return "var x=new XMLHttpRequest();x.open('GET','\(path)',false);x.send();x.status==200?x.responseText:''"
+    }
 
     /// A local file shown in a browser (a PDF, an image, a text file) is sent as itself: its text is not on screen.
     private static func localFile(_ url: String?) -> URL? {
@@ -519,11 +550,13 @@ enum ColonyWindowContext {
         if let local = localFile(url) { return local }
         var out = "Window context (the window the user dropped Mochi on)\nApp: \(app)\nWindow: \(title)\n"
         if let url { out += "URL: \(url)\n" }
+        var hint: String?
         let running = NSWorkspace.shared.runningApplications
             .first { $0.localizedName == app && $0.activationPolicy == .regular }
-        if let running, var text = pageText(of: running) ?? accessibilityText(of: running), !text.isEmpty {
+        if let running, var text = pageText(of: running, url: url, hint: &hint) ?? accessibilityText(of: running), !text.isEmpty {
             if text.count > maxChars { text = String(text.prefix(maxChars)) + "\n[truncated]" }
             out += "\nText on screen:\n\(text)\n"
+            if let hint { out += "\n(\(hint))\n" }
         } else if !AXIsProcessTrusted() {
             // Asks macOS to show the Accessibility prompt; a rebuilt, unsigned Coucou has to be allowed again.
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
@@ -541,10 +574,15 @@ enum ColonyWindowContext {
         } catch { return nil }
     }
 
-    private static func pageText(of app: NSRunningApplication) -> String? {
-        guard let id = app.bundleIdentifier, let script = pageScripts[id] else { return nil }
+    private static func pageText(of app: NSRunningApplication, url: String?, hint: inout String?) -> String? {
+        guard let id = app.bundleIdentifier, let template = pageScripts[id] else { return nil }
+        let js = googleExportJS(url) ?? "document.body.innerText"
+        let script = String(format: template, js.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))
         var error: NSDictionary?
         let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let message = error?[NSAppleScript.errorMessage] as? String, message.contains("Apple Events") {
+            hint = "The page text could not be read: in the browser, turn on View > Developer > Allow JavaScript from Apple Events."
+        }
         guard error == nil, let s = result?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
         return s
     }

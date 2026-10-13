@@ -157,7 +157,8 @@ final class ColonyStore: ObservableObject {
         guard !q.isEmpty, let ws = workspaceId else { return }
         let target = room
         errorText = nil
-        messages.append(ColonyMessage(id: "local-" + UUID().uuidString, isUser: true, text: q, channel: target, agentId: nil,
+        let localId = "local-" + UUID().uuidString
+        messages.append(ColonyMessage(id: localId, isUser: true, text: q, channel: target, agentId: nil,
                                       agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0))
         busyRooms.insert(target)
         Task {
@@ -167,7 +168,7 @@ final class ColonyStore: ObservableObject {
                 // an agent's own chat and in the group chat (Colony's decider picks who answers). If that is not possible
                 // (files the agents cannot read, Gateway not reachable) it goes through Colony as before.
                 var ids: [String] = []
-                if let file { ids.append(try await ColonyService.upload(workspaceId: ws, fileURL: file)) }
+                if let file, !q.hasPrefix("/") { ids.append(try await ColonyService.upload(workspaceId: ws, fileURL: file)) }     // a command carries no file
                 if UserDefaults.standard.object(forKey: "colonyDirectGateway") as? Bool ?? true {
                     if target == "auto", q.hasPrefix("/"), ids.isEmpty, !agents.isEmpty {
                         if await runCommandForTeam(q, workspaceId: ws) { await reload(); return }
@@ -175,9 +176,23 @@ final class ColonyStore: ObservableObject {
                     if target == "auto" { live.status = "Choosing who answers…" }       // the decider runs inside prepare
                     if let turn = await ColonyService.prepareTurn(workspaceId: ws, text: q, room: target, attachments: ids) {
                         // in an agent's own chat a slash command goes as typed
-                        if await runDirect(turn, room: target, text: target != "auto" && q.hasPrefix("/") ? q : turn.message) {
-                            busyRooms.remove(target)
+                        var next: ColonyService.Handoff?
+                        if await runDirect(turn, room: target, text: target != "auto" && q.hasPrefix("/") ? q : turn.message,
+                                           onHandoff: { next = $0 }) {
                             await reload()
+                            // The server has your message now. Every later reload in this chain happens while the room is still
+                            // busy, which keeps unsent local messages, so drop this one or it shows twice at the end.
+                            messages.removeAll { $0.id == localId }
+                            // The reply ended with "@Name task" for a teammate who accepts work: that teammate answers
+                            // next, in the same conversation (Colony allows at most 3 handoffs after the user's message).
+                            while let h = next {
+                                next = nil
+                                guard let t = await ColonyService.prepareTurn(workspaceId: ws, text: h.message, room: target,
+                                                                              handoff: h) else { break }
+                                _ = await runDirect(t, room: target, text: t.message, onHandoff: { next = $0 })
+                                await reload()
+                            }
+                            busyRooms.remove(target)
                             return
                         }
                     }
@@ -194,7 +209,8 @@ final class ColonyStore: ObservableObject {
     /// One turn with the Gateway: what it reports (status, tools, reply as it is written, questions) goes straight to the chat.
     /// False when the Gateway could not be reached at all (nothing happened: the caller sends it the normal way).
     private func runDirect(_ turn: ColonyService.NativeTurn, room: String, text: String,
-                           finish: ((String, Bool) -> Void)? = nil) async -> Bool {
+                           finish: ((String, Bool) -> Void)? = nil,
+                           onHandoff: ((ColonyService.Handoff) -> Void)? = nil) async -> Bool {
         nativeTurns += 1
         defer {
             nativeTurns -= 1; live.partial = nil; live.status = nil
@@ -248,7 +264,7 @@ final class ColonyStore: ObservableObject {
         }
         clearGatewayApproval()
         if let finish { finish(reply, failed) }       // the caller closes the turn (a command for the whole team)
-        else { await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed) }
+        else if let h = await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed) { onHandoff?(h) }
         return heardFromGateway
     }
 
