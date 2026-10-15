@@ -628,6 +628,10 @@ final class HookServer: @unchecked Sendable {
         default: isAlert = false
         }
         if state.mode == .expanded {
+            #if !APPSTORE
+            // The Claude Code chat is open: the answer is already on screen, so no "finished" card over it.
+            if view == .finished, state.view == .prompt, state.claudeChat { return }
+            #endif
             // Approval and question always win; other alerts are blocked while a card is showing
             if view == .approval || view == .question {
                 state.view = view
@@ -3101,6 +3105,23 @@ struct ClaudeTool: Equatable {
     var failed = false
 }
 
+/// A Claude Code session seen on one of the pills (the chat's session picker lists these).
+struct ClaudeSessionRef: Identifiable, Equatable {
+    var id: String { sessionId }
+    let pillId: String
+    let sessionId: String
+    let cwd: String
+    var seen: Date
+    var project: String { URL(fileURLWithPath: cwd).lastPathComponent }
+    var source: String {
+        switch pillId {
+        case "agent_claude": return "Claude"
+        case "agent_cursor": return "Cursor"
+        default:             return "VS Code"
+        }
+    }
+}
+
 struct ClaudeLine: Identifiable, Equatable {
     let id: Int          // position in the transcript: stable between reloads, so the list keeps its scroll position
     let isUser: Bool
@@ -3129,6 +3150,15 @@ final class ClaudeSessionRunner: ObservableObject {
     @Published private(set) var thread: [String: [ColonyMessage]] = [:]
 
     private var transcripts: [String: String] = [:]   // session id → its .jsonl
+    @Published private(set) var recent: [ClaudeSessionRef] = []
+    /// nil = the chat follows the latest session; else the session it stays on.
+    @Published private(set) var pinnedId: String?
+
+    /// The picker: nil follows the latest session again, a session pins the chat to it.
+    func select(_ ref: ClaudeSessionRef?) {
+        pinnedId = ref?.sessionId
+        if let r = ref ?? recent.first { current = (r.pillId, r.sessionId, r.cwd) }
+    }
 
     /// Re-reads the current session's transcript (the whole conversation, whoever typed it) into `lines`.
     private var lastStat: [String: String] = [:]   // transcript path → "size|mtime" of the last read
@@ -3248,7 +3278,19 @@ final class ClaudeSessionRunner: ObservableObject {
         if let m = permissionMode, !m.isEmpty { modes[sessionId] = m }
         sessions[pillId] = (sessionId, cwd)
         if let t = transcript, !t.isEmpty { transcripts[sessionId] = t }
-        if ["integration_claude", "agent_claude", "agent_cursor"].contains(pillId),
+        guard ["integration_claude", "agent_claude", "agent_cursor"].contains(pillId) else { return }
+        // The picker's list: newest first, one entry per session. Only publish when the order or the list changes.
+        if let i = recent.firstIndex(where: { $0.sessionId == sessionId }) {
+            if i != 0 || recent[0].cwd != cwd {
+                recent.remove(at: i)
+                recent.insert(ClaudeSessionRef(pillId: pillId, sessionId: sessionId, cwd: cwd, seen: Date()), at: 0)
+            }
+        } else {
+            recent.insert(ClaudeSessionRef(pillId: pillId, sessionId: sessionId, cwd: cwd, seen: Date()), at: 0)
+            if recent.count > 8 { recent.removeLast() }
+        }
+        // Following the latest (default) or pinned to one session: a pinned chat does not jump on other sessions' events.
+        if pinnedId == nil || pinnedId == sessionId,
            current?.pillId != pillId || current?.sessionId != sessionId || current?.cwd != cwd {
             current = (pillId, sessionId, cwd)
         }
@@ -3266,7 +3308,10 @@ final class ClaudeSessionRunner: ObservableObject {
     func send(_ text: String, pillId: String) -> String? {
         guard ["integration_claude", "agent_claude", "agent_cursor"].contains(pillId) else { return "\(pillId) can't take instructions" }
         guard !text.isEmpty, text.count <= 8000 else { return "empty or too long" }
-        guard let session = sessions[pillId] else { return "no Claude Code session seen yet: send one message in its window first" }
+        // The session the chat shows (it may be an older one on the same pill), else the latest seen there.
+        let target: (sessionId: String, cwd: String)? = current?.pillId == pillId
+            ? (current!.sessionId, current!.cwd) : sessions[pillId]
+        guard let session = target else { return "no Claude Code session seen yet: send one message in its window first" }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
             return "the session's folder is gone"

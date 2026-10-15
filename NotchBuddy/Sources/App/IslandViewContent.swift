@@ -5044,8 +5044,22 @@ struct ClaudeCodeChatView: View {
     private var headerRow: some View {
         HStack(spacing: 6) {
             if let cur = runner.current {
-                Text(URL(fileURLWithPath: cur.cwd).lastPathComponent)
-                    .font(.system(size: 10.5)).foregroundColor(Color(hex: "#7B8089")).lineLimit(1)
+                // Same place and look as the Colony chat's workspace menu.
+                Menu {
+                    Button((runner.pinnedId == nil ? "✓  " : "") + "Follow the latest session") { runner.select(nil) }
+                    Divider()
+                    ForEach(runner.recent) { r in
+                        Button((r.sessionId == cur.sessionId ? "✓  " : "") + "\(r.project) · \(r.source)") { runner.select(r) }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(URL(fileURLWithPath: cur.cwd).lastPathComponent).lineLimit(1)
+                        if runner.pinnedId != nil { Image(systemName: "pin.fill").font(.system(size: 7)) }
+                        Image(systemName: "chevron.down").font(.system(size: 8))
+                    }
+                    .font(.system(size: 10.5)).foregroundColor(Color(hex: "#7B8089"))
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             }
             Spacer()
             HStack(spacing: 5) {
