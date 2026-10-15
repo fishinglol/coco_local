@@ -60,7 +60,6 @@ struct ColonyChatView: View {
         .padding(.bottom, 10)
         .task { await store.reload() }
         .task { await store.loadCommandsIfNeeded() }
-        .task { await store.pollActivity(state: state) }
     }
 
     // MARK: Pieces
@@ -160,7 +159,7 @@ struct ColonyChatView: View {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         // Only the latest 40 are built: switching rooms costs the same however long the chat is.
                         ForEach(visible.suffix(40)) { m in
-                            ColonyBubble(m: m, showName: room == "auto").equatable().id(m.id)
+                            ColonyBubble(m: m, showName: room == "auto", workspaceId: workspaceId ?? "").equatable().id(m.id)
                         }
                         if busyRooms.contains(room) {
                             LiveBubble(live: store.live, room: room) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -333,18 +332,22 @@ struct ColonyChatView: View {
 // MARK: - Pieces that redraw on their own
 
 /// One message. Equatable, so SwiftUI skips it when nothing about it changed (its markdown is the costly part).
-private struct ColonyBubble: View, Equatable {
+struct ColonyBubble: View, Equatable {
     let m: ColonyMessage
     let showName: Bool
+    let workspaceId: String
 
     var body: some View {
         if m.isUser {
             HStack { Spacer(minLength: 32)
-                Text(m.text).font(.system(size: 12.5)).foregroundColor(Color(hex: "#F1F2F4"))
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Color.white.opacity(0.13))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .trailing, spacing: 5) {
+                    ForEach(m.attachments) { ColonyAttachmentView(attachment: $0, workspaceId: workspaceId) }
+                    Text(m.text).font(.system(size: 12.5)).foregroundColor(Color(hex: "#F1F2F4"))
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color.white.opacity(0.13))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         } else {
             VStack(alignment: .leading, spacing: 3) {
@@ -356,10 +359,8 @@ private struct ColonyBubble: View, Equatable {
                     }
                 }
                 ChatMarkdownView(markdown: m.text)
-                if let s = m.workedSeconds, s > 0 {
-                    Text("Worked for \(Int(s))s" + (m.stepCount > 0 ? " · \(m.stepCount) steps" : ""))
-                        .font(.system(size: 10.5)).foregroundColor(Color(hex: "#6B7078"))
-                }
+                if let s = m.workedSeconds, s > 0 { ColonyWorkedRow(seconds: s, steps: m.steps, count: m.stepCount) }
+                if !m.saved.isEmpty { ColonySavedChip(saved: m.saved).padding(.top, 2) }
                 if !m.sources.isEmpty { ColonySourcesChip(sources: m.sources).padding(.top, 2) }
             }
         }
@@ -417,7 +418,7 @@ private struct LiveTyping: View {
 }
 
 /// The message box. It keeps its own text, so a keystroke redraws this box and nothing else.
-private struct ColonyComposer: View {
+struct ColonyComposer: View {
     let placeholder: String
     let commands: [GatewayCommand]
     let canSend: Bool
@@ -714,5 +715,136 @@ private struct ColonySourcesList: View {
         }
         .buttonStyle(.plain)
         .help(s.url)
+    }
+}
+
+
+// MARK: - Attachments and saved files
+
+/// What went with the user's message: a small picture for an image, a file chip for the rest.
+private struct ColonyAttachmentView: View {
+    let attachment: ColonyAttachment
+    let workspaceId: String
+
+    private var url: URL? {
+        attachment.localURL ?? URL(string: ColonyService.baseURL + "/api/workspaces/\(workspaceId)/attachments/\(attachment.id)")
+    }
+
+    var body: some View {
+        if attachment.kind == "image", let url {
+            AsyncImage(url: url) { phase in
+                if let img = phase.image { img.resizable().scaledToFill() } else { Color.white.opacity(0.08) }
+            }
+            .frame(width: 120, height: 80).clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            HStack(spacing: 5) {
+                Image(systemName: attachment.kind == "pdf" ? "doc.richtext" : "paperclip").font(.system(size: 10))
+                Text(attachment.name).font(.system(size: 10.5)).lineLimit(1)
+            }
+            .foregroundColor(Color(hex: "#B9BDC4"))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color.white.opacity(0.1)).clipShape(Capsule())
+        }
+    }
+}
+
+/// "Saved to memory · USER.md" under a reply whose write/edit tool really succeeded.
+private struct ColonySavedChip: View {
+    let saved: [ColonySaved]
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 10)).foregroundColor(Color(hex: "#7BD88F"))
+            Text((saved.contains { $0.isMemory } ? "Saved to memory" : "Wrote") + " · " + saved.map(\.name).joined(separator: ", "))
+                .font(.system(size: 10.5, weight: .medium)).lineLimit(1)
+        }
+        .foregroundColor(Color(hex: "#B9BDC4"))
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Color.white.opacity(0.07)).clipShape(Capsule())
+    }
+}
+
+/// "Worked for 11s · 2 steps" under a reply; with steps it opens a list of what the agent ran, read and wrote.
+struct ColonyWorkedRow: View {
+    let seconds: Double
+    let steps: [ColonyStep]
+    let count: Int
+    @State private var open = false
+
+    private var label: String {
+        "Worked for \(Int(seconds))s" + (count > 0 ? " · \(count) step\(count == 1 ? "" : "s")" : "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if steps.isEmpty {
+                Text(label).font(.system(size: 10.5)).foregroundColor(Color(hex: "#6B7078"))
+            } else {
+                Button { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Text(label)
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                    }
+                    .font(.system(size: 10.5)).foregroundColor(Color(hex: open ? "#B9BDC4" : "#6B7078"))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Show what the agent did")
+                if open {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(steps) { ColonyStepCard(step: $0) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ColonyStepCard: View {
+    let step: ColonyStep
+
+    private var icon: String {
+        switch step.kind {
+        case "command": return "terminal"
+        case "read": return "doc.text"
+        case "write": return "square.and.pencil"
+        case "skill": return "sparkles"
+        case "memory": return "brain"
+        case "web": return "globe"
+        case "delegate": return "person.2"
+        case "connector": return "puzzlepiece.extension"
+        default: return "wrench.and.screwdriver"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 10)).frame(width: 12)
+                    .foregroundColor(Color(hex: step.ok ? "#8B8FFB" : "#FF8D97"))
+                Text(step.title).font(.system(size: 10.5, weight: .semibold)).foregroundColor(Color(hex: "#E6E8EB"))
+                if !step.ok {
+                    Text("failed").font(.system(size: 9.5, weight: .medium)).foregroundColor(Color(hex: "#FF8D97"))
+                }
+                Spacer(minLength: 0)
+                if let ms = step.ms {
+                    Text(ms >= 1000 ? String(format: "%.1fs", Double(ms) / 1000) : "\(ms)ms")
+                        .font(.system(size: 9.5)).foregroundColor(Color(hex: "#6B7078"))
+                }
+            }
+            if !step.detail.isEmpty {
+                Text(step.detail).font(.system(size: 10.5, design: .monospaced)).foregroundColor(Color(hex: "#C8CDD4"))
+                    .lineLimit(4).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            if !step.output.isEmpty {
+                Text(step.output).font(.system(size: 10, design: .monospaced)).foregroundColor(Color(hex: "#7B8089"))
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

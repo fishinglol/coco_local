@@ -103,10 +103,17 @@ schemes:
     archive:
       config: Release
 
+packages:
+  SwiftMath:
+    url: https://github.com/mgriebling/SwiftMath
+    from: 1.7.3
+
 targets:
   NotchBuddy:
     type: application
     platform: macOS
+    dependencies:
+      - package: SwiftMath
     sources:
       - path: Sources
         type: group
@@ -174,6 +181,8 @@ targets:
   CoucouAppStore:
     type: application
     platform: macOS
+    dependencies:
+      - package: SwiftMath
     sources:
       - path: Sources
         type: group

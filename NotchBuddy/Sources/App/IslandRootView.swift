@@ -99,7 +99,7 @@ struct IslandContainer: View {
                 // retain the panel's full height for particles and hands.
                 .mask(alignment: .topLeading) {
                     Rectangle().frame(width: islandWidth,
-                                      height: state.mode == .expanded ? 320 : islandHeight)
+                                      height: state.mode == .expanded ? max(320, islandHeight) : islandHeight)
                 }
                 .opacity(uploadActive || greetingActive ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: uploadActive || greetingActive)
@@ -170,6 +170,15 @@ struct IslandContainer: View {
                 if h != islandHeight { withAnimation(openSpring) { islandHeight = h } }
             }
         }
+        #if !APPSTORE
+        .onReceive(ClaudeSessionRunner.shared.objectWillChange) { _ in
+            DispatchQueue.main.async {
+                guard state.mode == .expanded, state.view == .prompt, state.claudeChat else { return }
+                let h = chatPromptHeight
+                if h != islandHeight { withAnimation(openSpring) { islandHeight = h } }
+            }
+        }
+        #endif
         .onChange(of: state.chatHistory.count) { _ in
             guard state.mode == .expanded, state.view == .prompt else { return }
             withAnimation(openSpring) { islandHeight = chatPromptHeight }
@@ -446,10 +455,8 @@ struct CountdownBar: View {
 
 struct IslandContentView: View {
     @ObservedObject var state: AppState
-    /// Pages other than the active one are built after the open animation, one per tick, so opening the
-    /// island does not build every page (the chat included) in the first frame.
-    @State private var built: Set<IslandView> = []
-
+    // Only the active page lives in the view tree. Pages kept alive at opacity 0 (as this view used to do)
+    // made every Mochi tick walk all of them: ~44% CPU with the island open vs ~20% (measured with sample).
     var body: some View {
         VStack(spacing: 0) {
             IslandHeader(state: state)
@@ -458,7 +465,7 @@ struct IslandContentView: View {
                 .animation(.easeInOut(duration: 0.2), value: state.view == .confused)
 
             ZStack {
-                ForEach(IslandView.allCases.filter { $0 == state.view || built.contains($0) }, id: \.self) { v in
+                ForEach(IslandView.allCases.filter { $0 == state.view }, id: \.self) { v in
                     let active = state.view == v
                     // Views that fill available height instead of the fixed 98pt content frame:
                     // chat (prompt) is always flexible; mail is flexible only when active so
@@ -483,14 +490,9 @@ struct IslandContentView: View {
         .padding(.top, 8)
         .padding(.bottom, 10)
         .foregroundColor(Color(hex: "#F5F6F8"))
-        .task {
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            for v in IslandView.allCases {
-                if Task.isCancelled { return }
-                built.insert(v)
-                try? await Task.sleep(nanoseconds: 40_000_000)
-            }
-        }
+        // Colony's activity/approval poll lives with the island, not with a page: a page leaves the tree when the
+        // approval card replaces it, and its cleanup used to dismiss that very card (a flicker loop).
+        .task { if ColonyStore.enabled { await ColonyStore.shared.pollActivity(state: state) } }
     }
 }
 
@@ -504,13 +506,7 @@ struct IslandHeader: View {
             // Left: tab capsules
             HStack(spacing: 5) {
                 TabButton(icon: "house.fill", view: .overview, state: state)
-                TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
-                    #if !APPSTORE
-                    if state.promptContext == nil {
-                        state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
-                    }
-                    #endif
-                })
+                TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: { state.claudeChat = false })
                 TabButton(icon: "plus", view: .upload, state: state)
             }
             .padding(.leading, 14)

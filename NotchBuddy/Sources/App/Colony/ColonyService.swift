@@ -39,6 +39,62 @@ struct ColonyMessage: Identifiable, Equatable {
     let workedSeconds: Double?
     let stepCount: Int
     var sources: [ColonySource] = []     // pages the agent's web search / web fetch really returned
+    var attachments: [ColonyAttachment] = []   // files that went with the user's message
+    var saved: [ColonySaved] = []        // files the agent really wrote this turn (its write/edit tool succeeded)
+    var steps: [ColonyStep] = []         // every tool call of the turn, as Colony's trace described it
+}
+
+/// One tool call the agent made (Colony's `trace.describe`: kind, title, detail, output, ok, ms).
+struct ColonyStep: Identifiable, Equatable {
+    let id: Int
+    let kind: String           // command, read, write, skill, memory, web, delegate, connector, other
+    let title: String          // "Ran command", "Read", "Searched the web", …
+    let detail: String         // the command line, the path, the query, the URL
+    let output: String
+    let ok: Bool
+    let ms: Int?
+
+    static func from(steps: Any?) -> [ColonyStep] {
+        (steps as? [[String: Any]] ?? []).enumerated().map { i, s in
+            ColonyStep(id: i, kind: s["kind"] as? String ?? "other",
+                       title: s["title"] as? String ?? (s["tool"] as? String ?? "Step"),
+                       detail: s["detail"] as? String ?? "", output: s["output"] as? String ?? "",
+                       ok: s["ok"] as? Bool ?? true, ms: s["ms"] as? Int)
+        }
+    }
+}
+
+/// A file attached to a message. `localURL` is set for a message that is not on the server yet (so the picture shows at once).
+struct ColonyAttachment: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let kind: String           // "image", "pdf", "text", …
+    var localURL: URL? = nil
+
+    static func from(_ raw: Any?) -> [ColonyAttachment] {
+        (raw as? [[String: Any]] ?? []).compactMap {
+            guard let id = $0["id"] as? String else { return nil }
+            return ColonyAttachment(id: id, name: $0["name"] as? String ?? "file", kind: $0["kind"] as? String ?? "text")
+        }
+    }
+}
+
+/// A file an agent wrote during its turn, read from the turn's own tool steps (never from the reply text).
+struct ColonySaved: Identifiable, Equatable {
+    var id: String { path }
+    let path: String
+    var name: String { (path as NSString).lastPathComponent }
+    /// Memory files are MEMORY.md, USER.md, memory/… and anything under .colony/.
+    var isMemory: Bool { ["MEMORY.md", "USER.md"].contains(name) || path.contains("/memory/") || path.hasPrefix("memory/") || path.contains(".colony/") }
+
+    static func from(steps: Any?) -> [ColonySaved] {
+        var seen = Set<String>()
+        return (steps as? [[String: Any]] ?? []).compactMap {
+            guard $0["kind"] as? String == "write", $0["ok"] as? Bool ?? false,
+                  let path = $0["detail"] as? String, !path.isEmpty, seen.insert(path).inserted else { return nil }
+            return ColonySaved(path: path)
+        }
+    }
 }
 
 /// One page an agent read from the web (Colony's trace parses it out of the tool's own result).
@@ -317,7 +373,8 @@ enum ColonyService {
             if role == "user" {
                 lastChannel = m["channel"] as? String ?? "auto"
                 return ColonyMessage(id: id, isUser: true, text: text, channel: lastChannel, agentId: nil,
-                                     agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0)
+                                     agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0,
+                                     attachments: ColonyAttachment.from(m["attachments"]))
             }
             let meta = m["metadata"] as? [String: Any] ?? [:]
             return ColonyMessage(id: id, isUser: false, text: text,
@@ -327,7 +384,9 @@ enum ColonyService {
                                  confidence: meta["confidence"] as? Double,
                                  workedSeconds: meta["worked_s"] as? Double,
                                  stepCount: (meta["steps"] as? [Any])?.count ?? 0,
-                                 sources: ColonySource.from(steps: meta["steps"]))
+                                 sources: ColonySource.from(steps: meta["steps"]),
+                                 saved: ColonySaved.from(steps: meta["steps"]),
+                                 steps: ColonyStep.from(steps: meta["steps"]))
         }
     }
 
@@ -422,7 +481,9 @@ enum ColonyService {
                              confidence: json["confidence"] as? Double,
                              workedSeconds: json["worked_s"] as? Double,
                              stepCount: (json["steps"] as? [Any])?.count ?? 0,
-                             sources: ColonySource.from(steps: json["steps"]))
+                             sources: ColonySource.from(steps: json["steps"]),
+                             saved: ColonySaved.from(steps: json["steps"]),
+                             steps: ColonyStep.from(steps: json["steps"]))
     }
 
     /// Uploads a file into the workspace and returns its attachment id. Colony reads files up to its own limit.

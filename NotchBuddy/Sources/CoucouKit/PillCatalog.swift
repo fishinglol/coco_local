@@ -34,7 +34,7 @@ struct PillDefinition {
     /// Label shown in the active-session card header (workspace/agent pills only).
     var sessionSubtitle: String {
         switch id {
-        case "integration_claude": return "Claude Code"
+        case "integration_claude", "agent_claude": return "Claude Code"
         case "agent_cursor":       return "Cursor"
         case "agent_codex":        return "Codex"
         default:                   return "Agent"
@@ -57,6 +57,8 @@ enum PillCatalog {
         .init(id: "agent_codex",         name: "Codex",       color: "#2DD4BF",
               category: .workspace, subtitle: "Integration",  source: .agent,  githubOnly: true),
         // ── Agents ───────────────────────────────────────────────────────────
+        .init(id: "agent_claude",        name: "Claude Code", color: "#D97757",
+              category: .agent,     subtitle: "Agent",        source: .agent,  githubOnly: true),
         .init(id: "agent_gemini",        name: "Gemini CLI",  color: "#8AB4F8",
               category: .agent,     subtitle: "Agent",        source: .agent,  githubOnly: true),
         .init(id: "agent_copilot",       name: "Copilot CLI", color: "#818CF8",

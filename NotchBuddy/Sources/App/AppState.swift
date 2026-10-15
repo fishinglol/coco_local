@@ -341,6 +341,13 @@ final class AppState: ObservableObject {
 
     // Pending approval request from Claude Code hook
     @Published var pendingApproval: ApprovalInfo? = nil
+    /// A Colony agent's reply, shown on the "finished" card instead of the focused pill's last line.
+    @Published var finishedNote: (who: String, text: String)? = nil
+    /// Which Home page was last in front: false = Team (Colony/OpenClaw), true = Tools (Claude Code, VS Code…).
+    /// A hook event sets it, a Colony reply clears it, so the island opens on the lane the news came from.
+    @Published var homeShowsTools = false
+    /// The island's chat page shows the Claude Code session instead of the Colony team (opened from the Claude Code pill / Mochi).
+    @Published var claudeChat = false
 
     // Pending AskUserQuestion from Claude Code hook
     @Published var pendingQuestion: AskQuestion? = nil

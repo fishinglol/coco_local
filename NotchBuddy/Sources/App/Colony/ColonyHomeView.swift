@@ -8,9 +8,15 @@ struct ColonyHomeView: View {
     @State private var swapping = false
     @State private var integrationId: String?     // an integration pill (GitHub, Stripe…) the user opened
     @State private var showingDetail = false
-    @State private var showTools = false
+    /// One flag for both the Home page in front and the chat the bubble tab opens, so they cannot disagree.
+    private var showTools: Bool { get { state.homeShowsTools } nonmutating set { state.homeShowsTools = newValue } }
     @State private var swipe: CGFloat = 0           // horizontal trackpad travel of the current two-finger swipe
     @State private var swipeMonitor: Any?
+
+    init(state: AppState) {
+        self.state = state
+        _integrationId = State(initialValue: state.homeShowsTools ? state.focusId : nil)
+    }
 
     private var focus: ColonyAgent? { store.currentAgent ?? store.agents.first }
 
@@ -20,6 +26,7 @@ struct ColonyHomeView: View {
                 CardBackground(wash: nil)
                 if let t = state.tasks.first(where: { $0.id == integrationId && $0.isIntegration }) {
                     IntegrationCardView(task: t, showingDetail: $showingDetail)   // same card Coucou's Home shows
+
                 } else {
                     leftCard.padding(.leading, 108).padding(.trailing, 36).padding(.vertical, 12)
                 }
@@ -32,13 +39,13 @@ struct ColonyHomeView: View {
         }
         .padding(.bottom, 10)
         .task { await store.reload() }
-        .task { await store.pollActivity(state: state) }
         .onAppear { startSwipeMonitor() }
         .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m); swipeMonitor = nil } }
     }
 
     private func setTools(_ on: Bool) {
         withAnimation(.easeInOut(duration: 0.25)) { showTools = on }
+        state.homeShowsTools = on
         if on { if let first = tools.first { state.setFocus(first.id); integrationId = first.id } }
         else { integrationId = nil }
     }
@@ -137,6 +144,9 @@ struct ColonyHomeView: View {
                             AgentPill(task: t, state: state, swapping: $swapping) {
                                 state.setFocus(t.id)
                                 integrationId = t.id
+                                #if !APPSTORE
+                                if t.id == "agent_claude" { openClaudeChat() }
+                                #endif
                             }
                         }
                     } footer: {
@@ -169,10 +179,18 @@ struct ColonyHomeView: View {
         .buttonStyle(.plain)
     }
 
+    /// The Claude Code pill (or its Mochi) opens the island's chat page for the Claude session, not the Colony team.
+    func openClaudeChat() {
+        state.claudeChat = true
+        withAnimation(.easeInOut(duration: 0.2)) { state.view = .prompt }
+    }
+
     private func openChat(room: String) {
+        state.claudeChat = false
         store.room = room
         integrationId = nil
         showTools = false
+        state.homeShowsTools = false
         withAnimation(.easeInOut(duration: 0.2)) { state.view = .prompt }
     }
 }

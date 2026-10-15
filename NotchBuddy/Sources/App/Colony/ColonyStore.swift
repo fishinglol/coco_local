@@ -158,8 +158,13 @@ final class ColonyStore: ObservableObject {
         let target = room
         errorText = nil
         let localId = "local-" + UUID().uuidString
+        let shown = file.map { f in
+            [ColonyAttachment(id: localId, name: f.lastPathComponent,
+                              kind: ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains(f.pathExtension.lowercased()) ? "image" : "file",
+                              localURL: f)]
+        } ?? []
         messages.append(ColonyMessage(id: localId, isUser: true, text: q, channel: target, agentId: nil,
-                                      agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0))
+                                      agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0, attachments: shown))
         busyRooms.insert(target)
         Task {
             defer { busyRooms.remove(target) }
@@ -188,7 +193,7 @@ final class ColonyStore: ObservableObject {
                             while let h = next {
                                 next = nil
                                 guard let t = await ColonyService.prepareTurn(workspaceId: ws, text: h.message, room: target,
-                                                                              handoff: h) else { break }
+                                                                              attachments: ids, handoff: h) else { break }
                                 _ = await runDirect(t, room: target, text: t.message, onHandoff: { next = $0 })
                                 await reload()
                             }
@@ -265,7 +270,20 @@ final class ColonyStore: ObservableObject {
         clearGatewayApproval()
         if let finish { finish(reply, failed) }       // the caller closes the turn (a command for the whole team)
         else if let h = await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed) { onHandoff?(h) }
+        else if !failed { announce(turn.roleName, reply) }   // the last reply of a chain, not each hop
         return heardFromGateway
+    }
+
+    /// The "finished" sound, and the island's finished card when the island is closed (open = you can see the chat).
+    private func announce(_ who: String, _ reply: String) {
+        let text = DiffEngine.toOneLine(reply)
+        guard !text.isEmpty else { return }
+        SoundEngine.shared.play("finish")
+        let state = AppState.shared
+        guard state.mode != .expanded else { return }
+        state.finishedNote = (who, text)
+        NotificationCenter.default.post(name: .hookExpand, object: IslandView.finished)
+        Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if state.finishedNote?.text == text { state.finishedNote = nil } }
     }
 
     /// A slash command in the group chat goes to every agent (each in its group session), one after another, and the
@@ -306,6 +324,7 @@ final class ColonyStore: ObservableObject {
         case "preparing_workspace": return "Preparing…"
         case "preparing_context":   return "Reading the conversation…"
         case "starting_model":      return "Starting the model…"
+        case "waiting_helpers":     return "Waiting for a teammate…"
         default:                    return "Thinking…"
         }
     }
@@ -424,6 +443,12 @@ extension ColonyMessage {
 @MainActor
 enum ChatHeight {
     static func current(coucouCount: Int) -> CGFloat {
+        #if !APPSTORE
+        // The Claude Code chat: grows with what is written (long answers open it up, short ones leave it), up to 560 pt.
+        if ColonyStore.enabled, AppState.shared.claudeChat, AppState.shared.view == .prompt {
+            return min(560, max(300, 190 + ClaudeSessionRunner.shared.chatContentHeight))
+        }
+        #endif
         if ColonyStore.enabled {
             return min(440, 300 + CGFloat(ColonyStore.shared.visible.count) * 36)
         }

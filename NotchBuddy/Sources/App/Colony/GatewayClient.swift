@@ -242,6 +242,10 @@ actor GatewayClient {
         let cont = out!
         let listener = UUID()
         var reply = ""
+        // A teammate spawned through OpenClaw (sessions_spawn) answers in a LATER run of this same session: the first
+        // `final` is only "waiting". Keep the stream open for that second final (measured on a Gateway 2026-10-14).
+        var spawned = false, waitedOnce = false
+        var waitTimer: Task<Void, Never>?
         listeners[listener] = { event, p in
             if event == "gateway.closed" { cont.finish(throwing: GatewayError.closed); return }
             guard (p["sessionKey"] as? String ?? (p["request"] as? [String: Any])?["sessionKey"] as? String) == key else { return }
@@ -253,7 +257,18 @@ actor GatewayClient {
                 case "final":
                     let parts = (p["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
                     let full = parts.compactMap { $0["text"] as? String }.joined()
-                    cont.yield(.final(full.isEmpty ? reply : full))
+                    let answer = full.isEmpty ? reply : full
+                    if spawned && !waitedOnce {
+                        waitedOnce = true
+                        cont.yield(.status("waiting_helpers"))
+                        waitTimer = Task {      // ponytail: if no second run ever comes, end with what we have
+                            try? await Task.sleep(nanoseconds: 180_000_000_000)
+                            if !Task.isCancelled { cont.yield(.final(answer)); cont.finish() }
+                        }
+                        return
+                    }
+                    waitTimer?.cancel()
+                    cont.yield(.final(answer))
                     cont.finish()
                 case "error", "aborted":
                     cont.finish(throwing: GatewayError.rejected(p["errorMessage"] as? String ?? "The reply stopped."))
@@ -269,8 +284,11 @@ actor GatewayClient {
                     let args = data["args"] as? [String: Any] ?? [:]
                     let name = data["name"] as? String ?? "tool"
                     let done = data["phase"] as? String == "result"
-                    cont.yield(.tool(title: args["title"] as? String ?? name,
-                                     detail: args["command"] as? String ?? args["path"] as? String ?? "",
+                    let asking = name.hasSuffix("sessions_spawn")      // the Gateway may qualify the name ("openclaw:core:sessions_spawn")
+                    if asking { spawned = true }
+                    cont.yield(.tool(title: asking ? "Asking a teammate" : name.hasSuffix("sessions_yield") ? "Waiting for the teammate" : args["title"] as? String ?? name,
+                                     detail: asking ? String((args["task"] as? String ?? "").prefix(80))
+                                                    : args["command"] as? String ?? args["path"] as? String ?? "",
                                      done: done, ok: data["isError"] as? Bool != true))
                 default:
                     break

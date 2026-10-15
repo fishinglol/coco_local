@@ -35,6 +35,7 @@ final class IslandWindowController: NSWindowController {
     // Window attach drag (M8)
     private var attachDragStart: NSPoint? = nil
     private var pendingIslandClick = false   // any island click → expand on mouseUp
+    private var pendingBotClick = false      // the click began on Mochi's head
     private var inAttachDrag = false
     private var dragGhostPanel: NSPanel? = nil
     private var dragGhostSize: CGFloat = 0
@@ -57,7 +58,7 @@ final class IslandWindowController: NSWindowController {
         let nH = geometry.height
 
         let panelW: CGFloat = 720
-        let panelH: CGFloat = 460
+        let panelH: CGFloat = 640   // the Claude Code chat grows to 560 pt + the tab row
         let sf = screen.frame
         let panel = IslandPanel(
             contentRect: NSRect(x: sf.midX - panelW/2, y: sf.maxY - panelH,
@@ -432,6 +433,7 @@ final class IslandWindowController: NSWindowController {
             }
 
         case .openChat:
+            state.claudeChat = false
             islandPanel.makeKey()
             expand(to: .prompt)
 
@@ -702,6 +704,7 @@ final class IslandWindowController: NSWindowController {
                     return
                 }
                 self.attachDragStart = NSEvent.mouseLocation
+                self.pendingBotClick = true
                 // Post slap only when expanded
                 guard self.state.mode == .expanded else { return }
                 NotificationCenter.default.post(name: .triggerSlap, object: nil)
@@ -746,6 +749,7 @@ final class IslandWindowController: NSWindowController {
                     // Drop on a window → attach context as before
                     self.hideDragGhost()
                     self.state.promptContext = ctx
+                    self.state.claudeChat = self.state.homeShowsTools && self.state.focusId == "agent_claude"
                     SoundEngine.shared.play("approve")
                     NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)
                     self.expand(to: .prompt)
@@ -778,7 +782,17 @@ final class IslandWindowController: NSWindowController {
             Self.assumeOnMainActor {
                 let hadPendingClick = self.pendingIslandClick
                 let wasDragging     = self.inAttachDrag
+                let botClicked      = self.pendingBotClick && !wasDragging
                 self.pendingIslandClick = false
+                self.pendingBotClick = false
+                #if !APPSTORE
+                // The big Mochi on the Claude Code card opens the Claude chat page.
+                if botClicked, self.state.mode == .expanded, self.state.view == .overview,
+                   self.state.homeShowsTools, self.state.focusId == "agent_claude" {
+                    self.state.claudeChat = true
+                    withAnimation(.easeInOut(duration: 0.2)) { self.state.view = .prompt }
+                }
+                #endif
                 if wasDragging {
                     finishDrag()
                 } else {

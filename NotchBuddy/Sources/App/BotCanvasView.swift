@@ -13,7 +13,8 @@ struct BotCanvasView: View {
     @StateObject private var engine = BotEngine()
 
     var body: some View {
-        TimelineView(.animation(paused: state.mode == .hidden)) { timeline in
+        // 30 fps like DesktopMochi: unthrottled this redraws at the display rate (120 Hz on ProMotion) the whole time the island is open.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: state.mode == .hidden)) { timeline in
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
                 let dtRaw = min(0.05, now - engine.lastTime)
@@ -201,7 +202,8 @@ struct MiniBotCanvasView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        // 24 fps: 20-30 pt pills; every ticking TimelineView costs a SwiftUI graph update.
+        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
                 let dt = min(0.05, now - engine.lastTime)

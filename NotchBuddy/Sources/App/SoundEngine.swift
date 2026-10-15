@@ -58,8 +58,19 @@ final class SoundEngine {
         guard let pool = players[name] else { return }
         // Find a player that is not currently playing
         let player = pool.first { !$0.isPlaying } ?? pool[0]
-        player.currentTime = 0
-        player.volume = volume
-        player.play()
+        // play() can block for ~150 ms on the first call; keep it off the main thread so a click does not stall the UI.
+        let job = PlayJob(player: player, volume: volume)
+        Self.queue.async {
+            job.player.currentTime = 0
+            job.player.volume = job.volume
+            job.player.play()
+        }
+    }
+
+    private static let queue = DispatchQueue(label: "coucou.sound", qos: .userInitiated)
+
+    private struct PlayJob: @unchecked Sendable {
+        let player: AVAudioPlayer
+        let volume: Float
     }
 }

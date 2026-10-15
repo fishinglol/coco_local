@@ -362,6 +362,7 @@ final class HookServer: @unchecked Sendable {
         let isVSCodeEditor = !isCursorEditor && (
             termProgram.lowercased().contains("vscode") ||
             bundleId.lowercased().contains("vscode"))
+        let isClaudeDesktop = bundleId.lowercased() == "com.anthropic.claudefordesktop"
 
         // Routing:
         // • "codex" → agent_codex (GitHub build only: workspace pill, approvals in the notch)
@@ -384,6 +385,9 @@ final class HookServer: @unchecked Sendable {
         } else if isCursorEditor {
             agentId = "agent_cursor"
             isExternalAgent = false
+        } else if isClaudeDesktop {
+            agentId = "agent_claude"
+            isExternalAgent = false
         } else if isVSCodeEditor {
             agentId = "integration_claude"
             isExternalAgent = false
@@ -393,6 +397,12 @@ final class HookServer: @unchecked Sendable {
         }
 
         let focused = state.focusId == agentId
+        #if !APPSTORE
+        ClaudeSessionRunner.shared.note(pillId: agentId, sessionId: sessionId, cwd: cwd,
+                                        transcript: payload["transcript_path"] as? String,
+                                        permissionMode: payload["permission_mode"] as? String)
+        #endif
+        state.homeShowsTools = true     // Home opens on Tools, not on the Colony team
         // For sessions that carry no id, derive a unique key from pill + cwd so that
         // concurrent anonymous sessions are tracked independently in RecapStore.
         let recapSessionId = (sessionId == "unknown" || sessionId.isEmpty)
@@ -457,6 +467,9 @@ final class HookServer: @unchecked Sendable {
             state.updateTask(id: agentId, state: .thinking)
             if let prompt = payload["prompt"] as? String, !prompt.isEmpty {
                 appendStep(id: agentId, step: String(prompt.prefix(60)))
+                #if !APPSTORE
+                ClaudeSessionRunner.shared.record(sessionId: sessionId, isUser: true, text: prompt)
+                #endif
             }
             RecapStore.shared.userPromptSubmit(sessionId: recapSessionId, pillId: agentId, project: projectName)
             NotificationCenter.default.post(name: .checkMondayRecap, object: nil)
@@ -516,6 +529,9 @@ final class HookServer: @unchecked Sendable {
                 }
             }
             RecapStore.shared.stop(sessionId: recapSessionId)
+            #if !APPSTORE
+            ClaudeSessionRunner.shared.record(sessionId: sessionId, isUser: false, text: rawFinal)
+            #endif
             SoundEngine.shared.play("finish")
             if focused {
                 expandIfNeeded(to: .finished)
@@ -656,6 +672,7 @@ final class HookServer: @unchecked Sendable {
         let isVSCodeEditor = !isCursorEditor && (
             termProgram.lowercased().contains("vscode") ||
             bundleId.lowercased().contains("vscode"))
+        let isClaudeDesktop = bundleId.lowercased() == "com.anthropic.claudefordesktop"
 
         // Codex, Copilot CLI and Muse Code get the same approval card as Claude Code / Cursor.
         // Other external agents (any other coucou_agent) answer immediately with "ask"
@@ -687,10 +704,12 @@ final class HookServer: @unchecked Sendable {
             pillId = "agent_muse"
         } else if isCursorEditor {
             pillId = "agent_cursor"
+        } else if isClaudeDesktop {
+            pillId = "agent_claude"
         } else {
             pillId = "integration_claude"
         }
-        guard isCodexRequest || isCopilotRequest || isMuseRequest || isCursorEditor || isVSCodeEditor else {
+        guard isCodexRequest || isCopilotRequest || isMuseRequest || isCursorEditor || isClaudeDesktop || isVSCodeEditor else {
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
                 close(fd)
@@ -858,6 +877,7 @@ final class HookServer: @unchecked Sendable {
         let isVSCodeEditor = !isCursorEditor && (
             termProgram.lowercased().contains("vscode") ||
             bundleId.lowercased().contains("vscode"))
+        let isClaudeDesktop = bundleId.lowercased() == "com.anthropic.claudefordesktop"
         #if !APPSTORE
         let isCodexRequest = rawAgent == "codex"
         #else
@@ -868,10 +888,12 @@ final class HookServer: @unchecked Sendable {
             pillId = "agent_codex"
         } else if isCursorEditor {
             pillId = "agent_cursor"
+        } else if isClaudeDesktop {
+            pillId = "agent_claude"
         } else {
             pillId = "integration_claude"
         }
-        guard isCodexRequest || isCursorEditor || isVSCodeEditor else {
+        guard isCodexRequest || isCursorEditor || isClaudeDesktop || isVSCodeEditor else {
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
                 close(fd)
@@ -3048,3 +3070,265 @@ except Exception:
     pass
 sys.exit(0)
 """
+
+#if !APPSTORE
+/// What the session's last assistant turn says about itself: model, reasoning effort, tokens in context.
+struct ClaudeMeta: Equatable {
+    let model: String      // "Sonnet 5.5"
+    let effort: String?    // "Medium"
+    let tokens: Int
+
+    /// The window is 200k; a session that already holds more is on the 1M window.
+    var window: Int { tokens > 200_000 ? 1_000_000 : 200_000 }
+    var fraction: Double { min(1, Double(tokens) / Double(window)) }
+    var label: String { "\(Int((fraction * 100).rounded())) %" }
+    var detail: String { "\(tokens.formatted()) of \(window.formatted()) tokens" }
+
+    /// "claude-sonnet-5-5-20260101" → "Sonnet 5.5"
+    static func prettyModel(_ id: String) -> String {
+        var parts = id.replacingOccurrences(of: "claude-", with: "").split(separator: "-").map(String.init)
+        parts.removeAll { $0.count >= 8 && Int($0) != nil }          // a date suffix
+        guard let name = parts.first else { return id }
+        let version = parts.dropFirst().filter { Int($0) != nil }.joined(separator: ".")
+        return name.capitalized + (version.isEmpty ? "" : " " + version)
+    }
+}
+
+struct ClaudeTool: Equatable {
+    let name: String
+    let detail: String       // the command, the file, the pattern…
+    var output: String = ""  // first lines of the result
+    var failed = false
+}
+
+struct ClaudeLine: Identifiable, Equatable {
+    let id: Int          // position in the transcript: stable between reloads, so the list keeps its scroll position
+    let isUser: Bool
+    let text: String
+    var tool: ClaudeTool? = nil
+    var at: Date? = nil      // when the transcript row was written (for "Worked for Ns")
+}
+
+// MARK: - Talking into a Claude Code session from the notch
+
+/// Remembers the Claude Code session last seen on each pill (from the hooks) and continues it in the background:
+/// `claude -p <text> --resume <session id>`, in the session's own folder. Hooks keep working, so the notch, and
+/// any permission request, follow the run like any other turn. Used by the Claude Code card and the iPhone link.
+/// GitHub build only: the App Store build is sandboxed and can't start `claude`.
+@MainActor
+final class ClaudeSessionRunner: ObservableObject {
+    static let shared = ClaudeSessionRunner()
+    private var sessions: [String: (sessionId: String, cwd: String)] = [:]
+    @Published private var running: [String: Process] = [:]   // by session id
+    /// The session the notch chat talks to: the latest one a hook reported on a Claude Code pill.
+    @Published private(set) var current: (pillId: String, sessionId: String, cwd: String)?
+    /// What was said in each session, from the hooks (prompt and last answer), so typed and sent-from-here turns both show.
+    @Published private(set) var lines: [String: [ClaudeLine]] = [:]
+    @Published private(set) var meta: [String: ClaudeMeta] = [:]
+    /// `lines` as the Colony chat's messages, rebuilt only when `lines` changes.
+    @Published private(set) var thread: [String: [ColonyMessage]] = [:]
+
+    private var transcripts: [String: String] = [:]   // session id → its .jsonl
+
+    /// Re-reads the current session's transcript (the whole conversation, whoever typed it) into `lines`.
+    private var lastStat: [String: String] = [:]   // transcript path → "size|mtime" of the last read
+
+    func reload() async {
+        guard let cur = current else { return }
+        let path = transcripts[cur.sessionId] ?? Self.transcriptGuess(cwd: cur.cwd, sessionId: cur.sessionId)
+        // Nothing new in the file: no parse, and above all nothing published (every publish redraws the chat mid-scroll).
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let stat = "\(attrs?[.size] as? UInt64 ?? 0)|\(attrs?[.modificationDate] as? Date ?? .distantPast)"
+        if lastStat[path] == stat, lines[cur.sessionId] != nil { return }
+        lastStat[path] = stat
+        let (parsed, info) = await Task.detached { Self.parseTranscript(path: path) }.value
+        if !parsed.isEmpty, lines[cur.sessionId] != parsed {   // empty = unreadable: keep what the hooks gave
+            lines[cur.sessionId] = parsed
+            thread[cur.sessionId] = ClaudeCodeChatView.buildThread(parsed)
+        }
+        if let info, meta[cur.sessionId] != info { meta[cur.sessionId] = info }
+    }
+
+    /// ~/.claude/projects/<folder with every non-alphanumeric turned into "-">/<session>.jsonl
+    nonisolated private static func transcriptGuess(cwd: String, sessionId: String) -> String {
+        let folder = String(cwd.map { $0.isLetter || $0.isNumber ? $0 : "-" })
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(folder)/\(sessionId).jsonl").path
+    }
+
+    /// The last ~4 MB of the file: user prompts and assistant text only (no tools, thinking, tool results).
+    nonisolated private static func parseTranscript(path: String) -> ([ClaudeLine], ClaudeMeta?) {
+        guard let h = FileHandle(forReadingAtPath: path) else { return ([], nil) }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        let from = size > 4_000_000 ? size - 4_000_000 : 0
+        try? h.seek(toOffset: from)
+        guard let data = try? h.readToEnd() else { return ([], nil) }
+        var rows = data.split(separator: UInt8(ascii: "\n"))
+        if from > 0, !rows.isEmpty { rows.removeFirst() }          // cut in the middle of a line
+        var out: [ClaudeLine] = []
+        var toolAt: [String: Int] = [:]       // tool_use id → index in `out`
+        var meta: ClaudeMeta?
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for row in rows {
+            guard let o = try? JSONSerialization.jsonObject(with: Data(row)) as? [String: Any],
+                  let type = o["type"] as? String, type == "user" || type == "assistant",
+                  o["isSidechain"] as? Bool != true, o["isMeta"] as? Bool != true,
+                  let msg = o["message"] as? [String: Any] else { continue }
+            if type == "assistant", let usage = msg["usage"] as? [String: Any], let model = msg["model"] as? String,
+               !model.hasPrefix("<") {
+                let n = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+                    .reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
+                let effort = (o["effort"] as? String).map { $0.capitalized }
+                if n > 0 { meta = ClaudeMeta(model: ClaudeMeta.prettyModel(model), effort: effort, tokens: n) }
+            }
+            let at = (o["timestamp"] as? String).flatMap { iso.date(from: $0) }
+            var texts: [String] = []
+            if let s = msg["content"] as? String { texts = [s] }
+            else if let blocks = msg["content"] as? [[String: Any]] {
+                for b in blocks {
+                    switch b["type"] as? String {
+                    case "text":
+                        if let t = b["text"] as? String { texts.append(t) }
+                    case "tool_use":
+                        let input = b["input"] as? [String: Any] ?? [:]
+                        let detail = (input["command"] ?? input["file_path"] ?? input["pattern"] ?? input["url"]
+                                      ?? input["path"] ?? input["description"]) as? String
+                            ?? String(String(data: (try? JSONSerialization.data(withJSONObject: input)) ?? Data(), encoding: .utf8)?.prefix(160) ?? "")
+                        if let id = b["id"] as? String { toolAt[id] = out.count }
+                        out.append(ClaudeLine(id: out.count, isUser: false, text: "",
+                                              tool: ClaudeTool(name: b["name"] as? String ?? "Tool", detail: detail), at: at))
+                    case "tool_result":
+                        guard let id = b["tool_use_id"] as? String, let i = toolAt[id] else { continue }
+                        var res = ""
+                        if let s = b["content"] as? String { res = s }
+                        else if let arr = b["content"] as? [[String: Any]] { res = arr.compactMap { $0["text"] as? String }.joined(separator: "\n") }
+                        out[i].tool?.output = res.components(separatedBy: "\n").prefix(3).joined(separator: "\n")
+                        out[i].tool?.failed = b["is_error"] as? Bool == true
+                    default: break
+                    }
+                }
+            }
+            for t in texts {
+                let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if s.isEmpty || s.hasPrefix("<") || s.hasPrefix("[Request interrupted") { continue }
+                out.append(ClaudeLine(id: out.count, isUser: type == "user", text: s, at: at))
+            }
+        }
+        return (Array(out.suffix(600)), meta)
+    }
+
+    var isBusy: Bool { current.map { running[$0.sessionId] != nil } ?? false }
+
+    /// A rough height of the current session's feed (the last 120 lines): how many rows each message wraps to,
+    /// plus one row for a run of tool steps. The island uses it to open as far as the conversation needs.
+    var chatContentHeight: CGFloat {
+        guard let cur = current, let ls = lines[cur.sessionId] else { return 0 }
+        var h: CGFloat = 0
+        var inRun = false
+        for l in ls.suffix(120) {
+            if l.tool != nil {
+                if !inRun { h += 24; inRun = true }
+                continue
+            }
+            inRun = false
+            let perRow = l.isUser ? 58 : 74           // characters per wrapped row at the chat's width
+            let rows = l.text.split(separator: "\n", omittingEmptySubsequences: false)
+                .reduce(0) { $0 + max(1, ($1.count + perRow - 1) / perRow) }
+            h += CGFloat(rows) * 17 + (l.isUser ? 18 : 6) + 6
+        }
+        return h
+    }
+
+    private var modes: [String: String] = [:]   // session id → the permission mode the window runs it in
+
+    func note(pillId: String, sessionId: String, cwd: String, transcript: String? = nil, permissionMode: String? = nil) {
+        guard !sessionId.isEmpty, sessionId != "unknown", !cwd.isEmpty else { return }
+        if let m = permissionMode, !m.isEmpty { modes[sessionId] = m }
+        sessions[pillId] = (sessionId, cwd)
+        if let t = transcript, !t.isEmpty { transcripts[sessionId] = t }
+        if ["integration_claude", "agent_claude", "agent_cursor"].contains(pillId),
+           current?.pillId != pillId || current?.sessionId != sessionId || current?.cwd != cwd {
+            current = (pillId, sessionId, cwd)
+        }
+    }
+
+    func record(sessionId: String, isUser: Bool, text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty, sessionId != "unknown", !t.isEmpty else { return }
+        lines[sessionId, default: []].append(ClaudeLine(id: (lines[sessionId]?.last?.id ?? -1) + 1, isUser: isUser, text: t))
+        if lines[sessionId]!.count > 600 { lines[sessionId]!.removeFirst() }
+        thread[sessionId] = ClaudeCodeChatView.buildThread(lines[sessionId]!)
+    }
+
+    /// Starts the instruction; returns nil when it started, else why not (shown under the field).
+    func send(_ text: String, pillId: String) -> String? {
+        guard ["integration_claude", "agent_claude", "agent_cursor"].contains(pillId) else { return "\(pillId) can't take instructions" }
+        guard !text.isEmpty, text.count <= 8000 else { return "empty or too long" }
+        guard let session = sessions[pillId] else { return "no Claude Code session seen yet: send one message in its window first" }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: session.cwd, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return "the session's folder is gone"
+        }
+        guard running[session.sessionId] == nil else { return "an instruction is already running for this session" }
+        guard let claude = Self.claudeExecutable() else {
+            return "can't find the claude command (looked in ~/.claude/local, Homebrew, /usr/local/bin, ~/.npm-global/bin, nvm)"
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: claude)
+        process.arguments = ["-p", text, "--resume", session.sessionId]
+        // Same permission mode as the window runs it in (Coucou is a mirror, not a stricter second user).
+        if let m = modes[session.sessionId] {
+            let mapped = m == "default" ? "manual" : m
+            if ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"].contains(mapped) {
+                process.arguments?.append(contentsOf: ["--permission-mode", mapped])
+            }
+        }
+        process.currentDirectoryURL = URL(fileURLWithPath: session.cwd)
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        env["PATH"] = [URL(fileURLWithPath: claude).deletingLastPathComponent().path, "/opt/homebrew/bin", "/usr/local/bin",
+                       "/usr/bin", "/bin", "/usr/sbin", "/sbin", "\(home)/.local/bin", env["PATH"] ?? ""].joined(separator: ":")
+        // The hooks route events by editor: keep them on the same pill.
+        switch pillId {
+        case "agent_cursor": env["__CFBundleIdentifier"] = "com.todesktop.230313mzl4w4u92"
+        case "agent_claude": env["__CFBundleIdentifier"] = "com.anthropic.claudefordesktop"
+        default:             env["TERM_PROGRAM"] = "vscode"
+        }
+        process.environment = env
+        process.standardInput = FileHandle.nullDevice
+        // Output goes to a file (a pipe could fill up and stall claude).
+        let logURL = URL(fileURLWithPath: home).appendingPathComponent("Library/Logs/NotchBuddy/instruction-last.log")
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let output = try? FileHandle(forWritingTo: logURL)
+        process.standardOutput = output ?? FileHandle.nullDevice
+        process.standardError = output ?? FileHandle.nullDevice
+        let sid = session.sessionId
+        let runner = self
+        process.terminationHandler = { _ in
+            try? output?.close()
+            Task { @MainActor in runner.running[sid] = nil }
+        }
+        do { try process.run() } catch { return "couldn't start claude: \(error.localizedDescription)" }
+        running[sid] = process
+        return nil
+    }
+
+    /// Where `claude` usually lives; the app doesn't get the shell's PATH.
+    static func claudeExecutable() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.claude/local/claude", "\(home)/.local/bin/claude", "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude", "\(home)/.npm-global/bin/claude", "\(home)/.bun/bin/claude",
+        ]
+        if let hit = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return hit }
+        // npm -g under nvm: ~/.nvm/versions/node/<version>/bin/claude
+        let nvm = "\(home)/.nvm/versions/node"
+        let versions = (try? FileManager.default.contentsOfDirectory(atPath: nvm)) ?? []
+        return versions.sorted(by: >).map { "\(nvm)/\($0)/bin/claude" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+}
+#endif

@@ -26,6 +26,7 @@ struct ColonySettingsView: View {
     @State private var downloading = false
     @State private var composio: Bool?
     @State private var newApp = ""
+    @State private var showAppPicker = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -335,6 +336,11 @@ struct ColonySettingsView: View {
                 set: { draft["accepts_handoff"] = $0 }))
             Text("When on, a teammate can hand this agent a task in the group chat (a reply ending in @Name). Off: only you can ask it.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
+            Toggle("Can ask teammates for help", isOn: Binding(
+                get: { draft["delegates"] as? Bool ?? false },
+                set: { draft["delegates"] = $0 }))
+            Text("When on, this agent can send part of its work to teammates that accept tasks (above) and then answers you with the result. Save to apply.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
             Text("Tools need a model that can use them, and a project folder set on the workspace.")
                 .font(.system(size: 11)).foregroundColor(.secondary)
             Divider()
@@ -345,10 +351,19 @@ struct ColonySettingsView: View {
 
     // MARK: Apps (Gmail, Slack, … through Composio)
 
+    private static let popularApps = [
+        "Gmail", "Google Calendar", "Google Drive", "Google Docs", "Google Sheets", "Slack", "Notion",
+        "GitHub", "Outlook", "Microsoft Teams", "OneDrive", "Discord", "Trello", "Asana", "Jira",
+        "Linear", "HubSpot", "Salesforce", "Dropbox", "Airtable", "Zoom", "Stripe", "Shopify", "X (Twitter)",
+    ]
+
     private var appsSection: some View {
         let tools = draft["tools"] as? [String: Any] ?? [:]
         let apps = tools["mcp_apps"] as? [String] ?? []
-        return VStack(alignment: .leading, spacing: 8) {
+        let mode = tools["mcp"] as? String ?? "off"
+        let custom = apps.filter { a in !Self.popularApps.contains { $0.lowercased() == a.lowercased() } }
+        let chips = Self.popularApps + custom
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Apps").font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -359,39 +374,88 @@ struct ColonySettingsView: View {
                 Text("Add your Composio key in Colony first (POST /api/mcp/composio). Then agents can use Gmail, Slack, Notion and 1,000+ other apps.")
                     .font(.system(size: 11)).foregroundColor(.secondary)
             }
-            HStack {
-                Text("This agent may use apps").font(.system(size: 12)).foregroundColor(.secondary)
+            Toggle("Let this agent use my apps", isOn: Binding(
+                get: { mode != "off" },
+                set: { v in var t = tools; t["mcp"] = v ? "ask" : "off"; draft["tools"] = t }))
+            Text("Read emails, check the calendar, post to Slack and more, on your behalf.")
+                .font(.system(size: 11)).foregroundColor(.secondary)
+            if mode != "off" {
                 Picker("", selection: Binding(
-                    get: { tools["mcp"] as? String ?? "off" },
+                    get: { mode },
                     set: { v in var t = tools; t["mcp"] = v; draft["tools"] = t })) {
-                    Text("Off").tag("off")
-                    Text("Ask first").tag("ask")
-                    Text("Allow").tag("allow")
+                    Text("Ask me before acting").tag("ask")
+                    Text("Act on its own").tag("allow")
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 220)
-            }
-            if (tools["mcp"] as? String ?? "off") != "off" {
-                Text(apps.isEmpty ? "Any app. Add names below to limit this agent to those apps."
-                                  : "Only these apps (the agent is told to stay within them):")
-                    .font(.system(size: 11)).foregroundColor(.secondary)
-                ForEach(apps, id: \.self) { name in
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320)
+
+                Text("Which apps?").font(.system(size: 12, weight: .medium)).padding(.top, 4)
+                Button { showAppPicker.toggle() } label: {
                     HStack {
-                        Text(name).font(.system(size: 12))
+                        Text(apps.isEmpty ? "Any app (tap to choose)" : "\(apps.count) selected: tap to change")
                         Spacer()
-                        Button { setApps(apps.filter { $0 != name }) } label: { Image(systemName: "xmark.circle") }
-                            .buttonStyle(.borderless)
+                        Image(systemName: "chevron.down").font(.system(size: 10))
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.primary.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain).frame(maxWidth: 320)
+                .popover(isPresented: $showAppPicker, arrowEdge: .bottom) { appPicker(apps) }
+                if !apps.isEmpty {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 6)], alignment: .leading, spacing: 6) {
+                        ForEach(apps, id: \.self) { name in
+                            Button { setApps(apps.filter { $0 != name }) } label: {
+                                HStack(spacing: 4) {
+                                    Text(name).font(.system(size: 12)).lineLimit(1)
+                                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                .background(Color.accentColor.opacity(0.25))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-                HStack {
-                    TextField("Gmail, Slack, Notion…", text: $newApp)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 240)
-                        .onSubmit { addApp(apps) }
-                    Button("Add") { addApp(apps) }
-                }
-                Text("Each app asks you to sign in once, the first time an agent uses it.")
+                Text("The first time an agent uses an app, it gives you a link to sign in.")
                     .font(.system(size: 11)).foregroundColor(.secondary)
             }
         }
+    }
+
+    private func appPicker(_ apps: [String]) -> some View {
+        let query = newApp.trimmingCharacters(in: .whitespaces)
+        let all = Self.popularApps + apps.filter { a in !Self.popularApps.contains { $0.lowercased() == a.lowercased() } }
+        let shown = query.isEmpty ? all : all.filter { $0.localizedCaseInsensitiveContains(query) }
+        return VStack(alignment: .leading, spacing: 6) {
+            TextField("Search or type another app", text: $newApp)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { addApp(apps) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown, id: \.self) { name in
+                        let on = apps.contains { $0.lowercased() == name.lowercased() }
+                        Button {
+                            setApps(on ? apps.filter { $0.lowercased() != name.lowercased() } : apps + [name])
+                        } label: {
+                            HStack {
+                                Image(systemName: on ? "checkmark.square.fill" : "square")
+                                    .foregroundColor(on ? .accentColor : .secondary)
+                                Text(name).font(.system(size: 12))
+                                Spacer()
+                            }
+                            .padding(.vertical, 5).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !query.isEmpty, !all.contains(where: { $0.lowercased() == query.lowercased() }) {
+                        Button("Add \"\(query)\"") { addApp(apps) }.padding(.top, 6)
+                    }
+                }
+            }
+            .frame(height: 260)
+        }
+        .padding(12).frame(width: 260)
     }
 
     private func setApps(_ apps: [String]) {

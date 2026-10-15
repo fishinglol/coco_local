@@ -22,7 +22,11 @@ struct IslandViewContent: View {
         case .mail:      MailView(state: state)
         case .prompt:
             if ColonyStore.enabled {
+                #if !APPSTORE
+                if state.claudeChat { ClaudeCodeChatView() } else { ColonyChatView(state: state) }
+                #else
                 ColonyChatView(state: state)
+                #endif
             } else {
                 PromptView(state: state)
             }
@@ -565,6 +569,7 @@ struct FinishedView: View {
     @ObservedObject var state: AppState
 
     private var finishedText: String {
+        if let note = state.finishedNote { return note.text }
         if let fl = state.focusTask?.finalLine { return fl }
         if let s = state.focusTask?.steps.last(where: { !$0.isDiffStep }) { return s }
         return String(localized: "Session finished")
@@ -574,13 +579,18 @@ struct FinishedView: View {
         ZStack {
             CardBackground(wash: .green)
             VStack(alignment: .leading, spacing: 5) {
-                AgentWho(task: state.focusTask, label: "Claude Code finished")
+                if let note = state.finishedNote {
+                    AgentWho(task: nil, label: "\(note.who) replied")
+                } else {
+                    AgentWho(task: state.focusTask, label: "Claude Code finished")
+                }
                 Text(finishedText)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 HStack(spacing: 8) {
                     #if !APPSTORE
+                    if state.finishedNote == nil {
                     PrimaryButton("Open terminal") {
                         let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
                         let activated = terminalBundleIds.compactMap { id in
@@ -590,6 +600,7 @@ struct FinishedView: View {
                             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"))
                         }
                         NotificationCenter.default.post(name: .islandCollapse, object: nil)
+                    }
                     }
                     #endif
                     SecondaryButton("OK") {
@@ -1603,7 +1614,7 @@ struct IntegrationCardView: View {
 
     private var isConfigured: Bool {
         switch task.id {
-        case "integration_claude":
+        case "integration_claude", "agent_claude":
             #if APPSTORE
             // Sandboxed: can't read ~/.claude directly — check install flag set by HookServer
             return UserDefaults.standard.bool(forKey: "coucouHooksInstalled")
@@ -1936,7 +1947,11 @@ struct IntegrationCardView: View {
                 .padding(.top, 2)
 
                 HStack(spacing: 8) {
-                    if task.id == "integration_claude" {
+                    if task.id == "agent_claude" {
+                        #if !APPSTORE
+                        ClaudeSendField(pillId: task.id)
+                        #endif
+                    } else if task.id == "integration_claude" {
                         Button("Open Visual Studio Code") { openVSCode() }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: task.color).opacity(0.7))
@@ -4793,3 +4808,332 @@ extension Color {
         )
     }
 }
+
+#if !APPSTORE
+/// Types an instruction into the Claude Code session last seen on this pill (`claude -p --resume`, in the background).
+/// The answer and any permission request come back through the hooks, like any other turn.
+struct ClaudeSendField: View {
+    let pillId: String
+    @State private var text = ""
+    @State private var note = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            TextField("Message Claude Code…", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Color.white.opacity(0.07))
+                .clipShape(Capsule())
+                .onSubmit(send)
+            if !note.isEmpty {
+                Text(note).font(.system(size: 10)).foregroundColor(Color(hex: "#8E939C")).lineLimit(1)
+            }
+        }
+    }
+
+    @MainActor private func send() {
+        let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !msg.isEmpty else { return }
+        if let why = ClaudeSessionRunner.shared.send(msg, pillId: pillId) {
+            note = why
+        } else {
+            note = "Sent to the session"
+            text = ""
+        }
+    }
+}
+#endif
+
+#if !APPSTORE
+/// Chat with the Claude Code session last seen in the hooks (Claude desktop, VS Code, Cursor), through Coucou.
+/// Messages go out as `claude -p --resume`, in the background; the answer comes back through the hooks.
+/// It is the island's chat page while `state.claudeChat` is on: same look as the Colony chat, without the team.
+struct ClaudeCodeChatView: View {
+    @ObservedObject private var runner = ClaudeSessionRunner.shared
+    @ObservedObject private var state = AppState.shared
+    @State private var note = ""
+    @State private var commands: [GatewayCommand] = []
+
+    /// A file dropped on the island / a window Mochi was dropped on: goes along with the next message, like in the Colony chat.
+    private var pendingFile: (name: String, url: URL)? {
+        if case .file(let name, let url)? = state.promptContext, let url { return (name, url) }
+        return nil
+    }
+    private var pendingWindow: (app: String, title: String, url: String?)? {
+        if case .window(let app, let title, let url)? = state.promptContext { return (app, title, url) }
+        return nil
+    }
+
+    private func chip(_ icon: String, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 10))
+            Text(label).font(.system(size: 10.5)).lineLimit(1)
+            Button { state.promptContext = nil } label: { Image(systemName: "xmark").font(.system(size: 8)) }
+                .buttonStyle(.plain)
+        }
+        .foregroundColor(Color(hex: "#B9BDC4"))
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Color.white.opacity(0.07)).clipShape(Capsule())
+    }
+
+    /// "[Attached file: PATH. Read it …]" lines the app appends: shown as a thumbnail (images) instead of text.
+    static func splitAttachments(_ s: String) -> (text: String, images: [String]) {
+        var images: [String] = []
+        var kept: [String] = []
+        for line in s.components(separatedBy: "\n") {
+            if line.hasPrefix("[Attached "), let r = line.range(of: ": "), let e = line.range(of: ". Read it") {
+                let path = String(line[r.upperBound..<e.lowerBound])
+                let ext = (path as NSString).pathExtension.lowercased()
+                if ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"].contains(ext) { images.append(path) }
+                continue
+            }
+            kept.append(line)
+        }
+        return (kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), images)
+    }
+
+    /// Same row as the Colony chat: context ring and percent, then a chip with the model and its reasoning effort.
+    @ViewBuilder private var statusRow: some View {
+        if let cur = runner.current, let m = runner.meta[cur.sessionId] {
+            let tint = m.fraction >= 0.9 ? "#F87171" : m.fraction >= 0.7 ? "#F5A524" : "#D97757"
+            HStack(spacing: 8) {
+                Spacer()
+                HStack(spacing: 4) {
+                    ZStack {
+                        Circle().stroke(Color.white.opacity(0.14), lineWidth: 2)
+                        Circle().trim(from: 0, to: m.fraction)
+                            .stroke(Color(hex: tint), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 11, height: 11)
+                    Text("\(m.label) context").font(.system(size: 10.5)).foregroundColor(Color(hex: "#7B8089"))
+                }
+                .help(m.detail)
+                HStack(spacing: 5) {
+                    Circle().fill(Color(hex: "#D97757")).frame(width: 6, height: 6)
+                    Text(m.effort.map { "\(m.model) · \($0)" } ?? m.model)
+                        .font(.system(size: 10.5, weight: .medium)).foregroundColor(Color(hex: "#7B8089"))
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Color.white.opacity(0.06)).clipShape(Capsule())
+            }
+        }
+    }
+
+    /// A tool call as the step card the Colony chat uses, so both chats read the same.
+    static func step(_ t: ClaudeTool, id: Int) -> ColonyStep {
+        let kind: String, title: String
+        switch t.name {
+        case "Bash":                  kind = "command"; title = "Ran command"
+        case "Read":                  kind = "read";    title = "Read"
+        case "Edit", "MultiEdit":     kind = "write";   title = "Edited"
+        case "Write":                 kind = "write";   title = "Wrote"
+        case "Grep", "Glob":          kind = "read";    title = "Searched"
+        case "WebFetch", "WebSearch": kind = "web";     title = "Fetched"
+        case "Skill":                 kind = "skill";   title = "Skill"
+        default:                      kind = "other";   title = t.name
+        }
+        return ColonyStep(id: id, kind: kind, title: title, detail: t.detail, output: t.output, ok: !t.failed, ms: nil)
+    }
+
+    /// The session as the Colony chat's own messages, so it is drawn by the very same `ColonyBubble`
+    /// (markdown, your grey box, "Worked for Ns · N steps" that opens into the step cards).
+    static func buildThread(_ lines: [ClaudeLine]) -> [ColonyMessage] {
+        var out: [ColonyMessage] = []
+        var steps: [ColonyStep] = []
+        var askedAt: Date?
+        var lastAt: Date?
+        func make(_ l: ClaudeLine, user: Bool, text: String, seconds: Double?, attachments: [ColonyAttachment] = []) -> ColonyMessage {
+            ColonyMessage(id: "claude-\(l.id)", isUser: user, text: text, channel: "claude", agentId: nil, agentName: nil,
+                          confidence: nil, workedSeconds: seconds, stepCount: user ? 0 : steps.count,
+                          attachments: attachments, steps: user ? [] : steps)
+        }
+        for l in lines {
+            lastAt = l.at ?? lastAt
+            if let t = l.tool {
+                steps.append(ClaudeCodeChatView.step(t, id: l.id))
+            } else if l.isUser {
+                let parts = ClaudeCodeChatView.splitAttachments(l.text)
+                let files = parts.images.enumerated().map { i, p in
+                    ColonyAttachment(id: "claude-\(l.id)-\(i)", name: (p as NSString).lastPathComponent, kind: "image",
+                                     localURL: URL(fileURLWithPath: p))
+                }
+                out.append(make(l, user: true, text: parts.text, seconds: nil, attachments: files))
+                steps = []
+                askedAt = l.at
+            } else {
+                var secs: Double?
+                if let a = askedAt, let e = l.at { secs = max(1, e.timeIntervalSince(a)) }
+                else if !steps.isEmpty { secs = 1 }
+                out.append(make(l, user: false, text: l.text, seconds: secs))
+                steps = []
+            }
+        }
+        // Tool calls of a turn that has no answer yet: shown at once, as the window shows them.
+        if !steps.isEmpty, lines.last != nil {
+            let secs = askedAt.map { max(1, (lastAt ?? Date()).timeIntervalSince($0)) } ?? 1
+            out.append(ColonyMessage(id: "claude-live", isUser: false, text: "", channel: "claude", agentId: nil, agentName: nil,
+                                     confidence: nil, workedSeconds: secs, stepCount: steps.count, steps: steps))
+        }
+        return out
+    }
+
+    /// Built once per change by the runner (not per redraw): a mouse move redraws the chat, the conversion must not run with it.
+    private var colonyMessages: [ColonyMessage] { runner.current.flatMap { runner.thread[$0.sessionId] } ?? [] }
+
+    /// What `/` offers: the user's and the project's commands and skills (what `claude -p "/name"` understands).
+    private static func loadCommands(cwd: String?) -> [GatewayCommand] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var dirs = ["\(home)/.claude/commands", "\(home)/.claude/skills"]
+        if let cwd { dirs += ["\(cwd)/.claude/commands", "\(cwd)/.claude/skills"] }
+        var found: [String: String] = [:]
+        func describe(_ file: String) -> String {
+            guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return "" }
+            for line in text.components(separatedBy: "\n").prefix(20) where line.hasPrefix("description:") {
+                return line.dropFirst("description:".count).trimmingCharacters(in: .whitespaces)
+            }
+            return ""
+        }
+        for d in dirs {
+            for entry in (try? FileManager.default.contentsOfDirectory(atPath: d)) ?? [] {
+                if entry.hasSuffix(".md") {
+                    found[String(entry.dropLast(3))] = describe("\(d)/\(entry)")
+                } else if FileManager.default.fileExists(atPath: "\(d)/\(entry)/SKILL.md") {
+                    found[entry] = describe("\(d)/\(entry)/SKILL.md")
+                }
+            }
+        }
+        found["compact"] = "Summarise the conversation to free context"
+        return found.keys.sorted().map { GatewayCommand(name: $0, description: found[$0] ?? "", usage: "") }
+    }
+
+    private var messages: [ClaudeLine] { runner.current.flatMap { runner.lines[$0.sessionId] } ?? [] }
+
+    // Same structure as ColonyChatView (laid out at the island's final height, card, 84 pt inset, feed, chip row, composer),
+    // so the two chats look and scroll alike.
+    var body: some View {
+        Color.clear.overlay(alignment: .top) {
+            content.frame(height: ChatHeight.current(coucouCount: state.chatHistory.count) - 52)
+        }
+    }
+
+    private var content: some View {
+        ZStack(alignment: .leading) {
+            CardBackground(wash: .indigo)
+            VStack(alignment: .leading, spacing: 6) {
+                headerRow
+                feed
+                HStack { statusRow }.padding(.horizontal, 10)
+                inputRow
+            }
+            .padding(.leading, 84).padding(.trailing, 16)
+            .padding(.top, 10).padding(.bottom, 14)
+        }
+        .padding(.bottom, 10)
+        .onAppear { commands = Self.loadCommands(cwd: runner.current?.cwd) }
+        .task {     // the transcript is the truth: it also holds what was typed in the window and the in-between text
+            while !Task.isCancelled {
+                await runner.reload()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    /// Where the Colony chat has the workspace name and the room buttons: the project, and the one "room" there is.
+    private var headerRow: some View {
+        HStack(spacing: 6) {
+            if let cur = runner.current {
+                Text(URL(fileURLWithPath: cur.cwd).lastPathComponent)
+                    .font(.system(size: 10.5)).foregroundColor(Color(hex: "#7B8089")).lineLimit(1)
+            }
+            Spacer()
+            HStack(spacing: 5) {
+                Circle().fill(Color(hex: "#D97757")).frame(width: 14, height: 14)
+                Text("Claude Code").font(.system(size: 10.5, weight: .medium)).foregroundColor(Color(hex: "#E6E8EB"))
+            }
+            .padding(.horizontal, 8)
+            .frame(minWidth: 26, minHeight: 24)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: "#D97757").opacity(0.7), lineWidth: 1))
+        }
+        .frame(height: 26)
+    }
+
+    @ViewBuilder private var feed: some View {
+        if runner.current == nil {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Claude Code · no session seen yet")
+                    .font(.system(size: 11, weight: .medium)).foregroundColor(Color(hex: "#9AA0A8"))
+                Text("Send one message in its window (Claude desktop, VS Code), then talk to it from here.")
+                    .font(.system(size: 11)).foregroundColor(Color(hex: "#7B8089")).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    // Lazy, like the Colony feed: only what is on screen is laid out.
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(colonyMessages.suffix(40)) { m in
+                            ColonyBubble(m: m, showName: false, workspaceId: "").equatable().id(m.id)
+                        }
+                        if runner.isBusy {
+                            HStack { TypingDotsView(); Spacer(minLength: 32) }
+                            Text("Working…").font(.system(size: 10.5)).foregroundColor(Color(hex: "#8A8F98"))
+                        }
+                        // Always the last child: scrolling to it lands on the true end however tall the bubbles are.
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .padding(.vertical, 2)
+                }
+                .onChange(of: messages.count) { _ in jumpToLatest(proxy) }
+                .onChange(of: runner.isBusy) { _ in jumpToLatest(proxy) }
+                .onAppear { jumpToLatest(proxy) }
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        for delay in [0.0, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private var inputRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !note.isEmpty {
+                Text(note).font(.system(size: 10)).foregroundColor(Color(hex: "#8E939C")).lineLimit(2)
+            }
+            if let f = pendingFile { chip("paperclip", f.name) }
+            if let w = pendingWindow { chip("macwindow", w.title.isEmpty ? w.app : "\(w.app) · \(w.title)") }
+            ColonyComposer(placeholder: "Message Claude Code…", commands: commands,
+                           canSend: runner.current != nil, onSend: send)
+        }
+    }
+
+    @MainActor private func send(_ typed: String) {
+        var msg = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !msg.isEmpty, let cur = runner.current else { return }
+        // An attachment goes as a path the session reads with its own Read tool (images included).
+        var temp: URL?
+        if let f = pendingFile {
+            msg += "\n\n[Attached file: \(f.url.path). Read it with the Read tool.]"
+        } else if let w = pendingWindow, let file = ColonyWindowContext.file(app: w.app, title: w.title, url: w.url) {
+            temp = file
+            msg += "\n\n[Attached window text: \(file.path). Read it with the Read tool.]"
+        }
+        if let why = runner.send(msg, pillId: cur.pillId) {
+            if let temp { ColonyWindowContext.cleanup(temp) }
+            note = why
+        } else {
+            note = ""
+            if pendingFile != nil || pendingWindow != nil { state.promptContext = nil }
+            if let temp { Task { try? await Task.sleep(nanoseconds: 600_000_000_000); ColonyWindowContext.cleanup(temp) } }
+        }
+    }
+}
+#endif
