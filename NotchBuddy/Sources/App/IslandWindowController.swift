@@ -789,8 +789,7 @@ final class IslandWindowController: NSWindowController {
                 // The big Mochi on the Claude Code card opens the Claude chat page.
                 if botClicked, self.state.mode == .expanded, self.state.view == .overview,
                    self.state.homeShowsTools, self.state.focusId == "agent_claude" {
-                    self.state.claudeChat = true
-                    withAnimation(.easeInOut(duration: 0.2)) { self.state.view = .prompt }
+                    Task { await ClaudeSessionRunner.shared.openChat() }
                 }
                 #endif
                 if wasDragging {

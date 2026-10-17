@@ -329,6 +329,11 @@ actor GatewayClient {
         return stream
     }
 
+    /// Stops the reply the Gateway is writing in this session (OpenClaw's own `chat.abort`).
+    func abort(agentId: String, session: String) async {
+        _ = try? await request("chat.abort", ["sessionKey": "agent:\(agentId):\(session)", "agentId": agentId])
+    }
+
     private func removeListener(_ id: UUID) { listeners.removeValue(forKey: id) }
 
     private var reminderListener: UUID?

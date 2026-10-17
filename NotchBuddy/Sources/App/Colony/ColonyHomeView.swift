@@ -181,8 +181,7 @@ struct ColonyHomeView: View {
 
     /// The Claude Code pill (or its Mochi) opens the island's chat page for the Claude session, not the Colony team.
     func openClaudeChat() {
-        state.claudeChat = true
-        withAnimation(.easeInOut(duration: 0.2)) { state.view = .prompt }
+        Task { await ClaudeSessionRunner.shared.openChat() }
     }
 
     private func openChat(room: String) {

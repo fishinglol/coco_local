@@ -306,7 +306,8 @@ struct ColonyChatView: View {
                 .background(Color.white.opacity(0.07)).clipShape(Capsule())
             }
             ColonyComposer(placeholder: room == "auto" ? "Message the team…" : "Message \(currentAgent?.name ?? "agent")…",
-                           commands: store.commands, canSend: workspaceId != nil, onSend: send)
+                           commands: store.commands, canSend: workspaceId != nil, onSend: send,
+                           busy: store.busyRooms.contains(room), onStop: store.stop)
         }
     }
 
@@ -423,6 +424,9 @@ struct ColonyComposer: View {
     let commands: [GatewayCommand]
     let canSend: Bool
     let onSend: (String) -> Void
+    /// A reply is being written: the arrow becomes a stop button (when `onStop` is given).
+    var busy = false
+    var onStop: (() -> Void)?
     @State private var text = ""
     @FocusState private var focused: Bool
 
@@ -470,12 +474,21 @@ struct ColonyComposer: View {
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain).font(.system(size: 13))
                 .focused($focused).onSubmit(send)
-            Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(hex: "#0B0C0E"))
+            if busy, let onStop {
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill").font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(hex: "#0B0C0E"))
+                }
+                .buttonStyle(SendButtonStyle())
+                .help("Stop")
+            } else {
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color(hex: "#0B0C0E"))
+                }
+                .buttonStyle(SendButtonStyle())
+                .disabled(empty || !canSend)
             }
-            .buttonStyle(SendButtonStyle())
-            .disabled(empty || !canSend)
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(Color.white.opacity(0.07)).clipShape(RoundedRectangle(cornerRadius: 12))

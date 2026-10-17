@@ -307,7 +307,13 @@ private enum MarkdownCache {
         var options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace)
         options.failurePolicy = .returnPartiallyParsedIfPossible
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        var out = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        // `code` in a sentence: salmon on a soft chip, like Claude's own window.
+        for run in out.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            out[run.range].foregroundColor = Color(hex: "#E08A78")
+            out[run.range].backgroundColor = Color.white.opacity(0.09)
+        }
+        return out
     }
 }
 

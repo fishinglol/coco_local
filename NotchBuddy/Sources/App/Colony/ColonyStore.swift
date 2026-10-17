@@ -27,6 +27,9 @@ final class ColonyStore: ObservableObject {
     @Published var commands: [GatewayCommand] = []
     /// Turns running in the Gateway right now (their status comes from the Gateway, not from Colony's activity poll).
     private var nativeTurns = 0
+    /// The send in flight and the Gateway session it is using, so the stop button can end both.
+    private var sendTask: Task<Void, Never>?
+    private var runningTurn: (agentId: String, session: String)?
     @Published var offline = false
     @Published var errorText: String?
     @Published var contexts: [String: ColonyContext] = [:]     // agent id -> how full its context is
@@ -152,6 +155,14 @@ final class ColonyStore: ObservableObject {
         }
     }
 
+    /// The stop button: ends the reply being written (in the Gateway too) and frees the chat.
+    func stop() {
+        sendTask?.cancel()
+        if let t = runningTurn { Task { await GatewayClient.shared.abort(agentId: t.agentId, session: t.session) } }
+        busyRooms.removeAll()
+        live.partial = nil; live.status = nil
+    }
+
     func send(_ text: String, file: URL?) {
         let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, let ws = workspaceId else { return }
@@ -166,7 +177,7 @@ final class ColonyStore: ObservableObject {
         messages.append(ColonyMessage(id: localId, isUser: true, text: q, channel: target, agentId: nil,
                                       agentName: nil, confidence: nil, workedSeconds: nil, stepCount: 0, attachments: shown))
         busyRooms.insert(target)
-        Task {
+        sendTask = Task {
             defer { busyRooms.remove(target) }
             do {
                 // A message runs in the Gateway directly (live status, its own approvals, images and PDFs as attachments), in
@@ -190,7 +201,7 @@ final class ColonyStore: ObservableObject {
                             messages.removeAll { $0.id == localId }
                             // The reply ended with "@Name task" for a teammate who accepts work: that teammate answers
                             // next, in the same conversation (Colony allows at most 3 handoffs after the user's message).
-                            while let h = next {
+                            while let h = next, !Task.isCancelled {
                                 next = nil
                                 guard let t = await ColonyService.prepareTurn(workspaceId: ws, text: h.message, room: target,
                                                                               attachments: ids, handoff: h) else { break }
@@ -203,6 +214,7 @@ final class ColonyStore: ObservableObject {
                     }
                     live.status = nil
                 }
+                guard !Task.isCancelled else { return }       // stopped before the reply started
                 messages.append(try await ColonyService.send(workspaceId: ws, text: q, channel: target, attachments: ids))
                 live.partial = nil
             } catch {
@@ -217,7 +229,9 @@ final class ColonyStore: ObservableObject {
                            finish: ((String, Bool) -> Void)? = nil,
                            onHandoff: ((ColonyService.Handoff) -> Void)? = nil) async -> Bool {
         nativeTurns += 1
+        runningTurn = (turn.agentId, turn.session)
         defer {
+            runningTurn = nil
             nativeTurns -= 1; live.partial = nil; live.status = nil
             Task { await refreshContexts() }
         }
@@ -267,6 +281,7 @@ final class ColonyStore: ObservableObject {
             failed = true
             if heardFromGateway { errorText = error.localizedDescription }
         }
+        if Task.isCancelled { failed = true }
         clearGatewayApproval()
         if let finish { finish(reply, failed) }       // the caller closes the turn (a command for the whole team)
         else if let h = await ColonyService.finishTurn(id: turn.turnId, reply: reply, failed: failed) { onHandoff?(h) }

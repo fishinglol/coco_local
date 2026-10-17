@@ -968,6 +968,11 @@ final class HookServer: @unchecked Sendable {
             if !cwd.isEmpty { state.tasks[idx].sessionCwd = cwd }
             return
         }
+        // The Claude Code pill stays once its first session has been seen (declared active, so it is back after a restart;
+        // the user can untick it in Settings → Active pills).
+        if id == "agent_claude", !state.activeIntegrations.contains(id), state.activeIntegrations.count < 4 {
+            state.activeIntegrations.insert(id)
+        }
         // Transient: create and insert after the main pill
         let def = PillCatalog.definition(for: id)
         let color = def?.color ?? "#C0C4CC"
@@ -3081,9 +3086,12 @@ struct ClaudeMeta: Equatable {
     let model: String      // "Sonnet 5.5"
     let effort: String?    // "Medium"
     let tokens: Int
+    var modelId = ""       // "claude-sonnet-5-5-…": the window belongs to the model, not to one session
+    var windowSize: Int? = nil
 
-    /// The window is 200k; a session that already holds more is on the 1M window.
-    var window: Int { tokens > 200_000 ? 1_000_000 : 200_000 }
+    /// The model's window as learned from the transcripts (`ClaudeSessionRunner.windowFor`); 200k until one of its
+    /// sessions has held more, then 1M.
+    var window: Int { windowSize ?? (tokens > 200_000 ? 1_000_000 : 200_000) }
     var fraction: Double { min(1, Double(tokens) / Double(window)) }
     var label: String { "\(Int((fraction * 100).rounded())) %" }
     var detail: String { "\(tokens.formatted()) of \(window.formatted()) tokens" }
@@ -3163,6 +3171,61 @@ final class ClaudeSessionRunner: ObservableObject {
     /// Re-reads the current session's transcript (the whole conversation, whoever typed it) into `lines`.
     private var lastStat: [String: String] = [:]   // transcript path → "size|mtime" of the last read
 
+    // MARK: Context window
+    // A transcript does not say how big the model's window is. It is the model's, not the session's, so: the most
+    // context any session of that model has held (kept across launches, seeded once from the newest transcripts).
+    // Past 200k it is the 1M window; below that, 200k.
+    private static let maxKey = "claudeModelMaxContext"
+    private var maxSeen: [String: Int] = (UserDefaults.standard.dictionary(forKey: ClaudeSessionRunner.maxKey) as? [String: Int]) ?? [:]
+    private var seeded: Set<String> = []
+
+    func windowFor(modelId: String, tokens: Int) -> Int {
+        if tokens > (maxSeen[modelId] ?? 0) {
+            maxSeen[modelId] = tokens
+            UserDefaults.standard.set(maxSeen, forKey: Self.maxKey)
+        }
+        if !seeded.contains(modelId) {
+            seeded.insert(modelId)
+            Task { [weak self] in
+                let best = await Task.detached { Self.biggestContext(of: modelId) }.value
+                guard let self, best > (self.maxSeen[modelId] ?? 0) else { return }
+                self.maxSeen[modelId] = best
+                UserDefaults.standard.set(self.maxSeen, forKey: Self.maxKey)
+                self.lastStat = [:]     // re-read, so the meter picks the new window up
+            }
+        }
+        return (maxSeen[modelId] ?? 0) > 200_000 ? 1_000_000 : 200_000
+    }
+
+    /// The biggest context a reply of `modelId` shows at the end of the 40 newest transcripts.
+    nonisolated private static func biggestContext(of modelId: String) -> Int {
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+        let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        var files: [(URL, Date)] = []
+        for d in dirs {
+            for f in (try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            where f.pathExtension == "jsonl" {
+                files.append((f, (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast))
+            }
+        }
+        var best = 0
+        for (f, _) in files.sorted(by: { $0.1 > $1.1 }).prefix(40) {
+            guard let h = try? FileHandle(forReadingFrom: f) else { continue }
+            defer { try? h.close() }
+            let size = (try? h.seekToEnd()) ?? 0
+            try? h.seek(toOffset: size > 400_000 ? size - 400_000 : 0)
+            guard let data = try? h.readToEnd() else { continue }
+            for row in data.split(separator: UInt8(ascii: "\n")) where row.count > 20 {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(row)) as? [String: Any],
+                      let msg = o["message"] as? [String: Any], msg["model"] as? String == modelId,
+                      let u = msg["usage"] as? [String: Any] else { continue }
+                let n = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].reduce(0) { $0 + (u[$1] as? Int ?? 0) }
+                best = max(best, n)
+            }
+        }
+        return best
+    }
+
     func reload() async {
         guard let cur = current else { return }
         let path = transcripts[cur.sessionId] ?? Self.transcriptGuess(cwd: cur.cwd, sessionId: cur.sessionId)
@@ -3176,7 +3239,10 @@ final class ClaudeSessionRunner: ObservableObject {
             lines[cur.sessionId] = parsed
             thread[cur.sessionId] = ClaudeCodeChatView.buildThread(parsed)
         }
-        if let info, meta[cur.sessionId] != info { meta[cur.sessionId] = info }
+        if var info {
+            info.windowSize = windowFor(modelId: info.modelId, tokens: info.tokens)
+            if meta[cur.sessionId] != info { meta[cur.sessionId] = info }
+        }
     }
 
     /// ~/.claude/projects/<folder with every non-alphanumeric turned into "-">/<session>.jsonl
@@ -3211,7 +3277,7 @@ final class ClaudeSessionRunner: ObservableObject {
                 let n = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
                     .reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
                 let effort = (o["effort"] as? String).map { $0.capitalized }
-                if n > 0 { meta = ClaudeMeta(model: ClaudeMeta.prettyModel(model), effort: effort, tokens: n) }
+                if n > 0 { meta = ClaudeMeta(model: ClaudeMeta.prettyModel(model), effort: effort, tokens: n, modelId: model) }
             }
             let at = (o["timestamp"] as? String).flatMap { iso.date(from: $0) }
             var texts: [String] = []
@@ -3241,15 +3307,46 @@ final class ClaudeSessionRunner: ObservableObject {
                 }
             }
             for t in texts {
-                let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
-                if s.isEmpty || s.hasPrefix("<") || s.hasPrefix("[Request interrupted") { continue }
+                var s = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                if type == "user", let name = Self.tag("command-name", in: s) {       // "/ponytail start" typed in the window
+                    s = (name + " " + (Self.tag("command-args", in: s) ?? "")).trimmingCharacters(in: .whitespaces)
+                }
+                // What the window adds around a message (reminders, command output, hook notes) is not something the user said;
+                // a message that merely starts with "<" (pasted HTML, a comment) is.
+                let system = ["<system-reminder", "<local-command", "<command-", "<bash-", "<task-notification",
+                              "<user-prompt-submit-hook", "<ide_", "<synthetic"]
+                if s.isEmpty || s.hasPrefix("[Request interrupted") || system.contains(where: { s.hasPrefix($0) }) { continue }
+                if type == "assistant", s.hasPrefix("<") { continue }
                 out.append(ClaudeLine(id: out.count, isUser: type == "user", text: s, at: at))
             }
         }
         return (Array(out.suffix(600)), meta)
     }
 
+    nonisolated private static func tag(_ name: String, in s: String) -> String? {
+        guard let a = s.range(of: "<\(name)>"), let b = s.range(of: "</\(name)>", range: a.upperBound..<s.endIndex) else { return nil }
+        return String(s[a.upperBound..<b.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var isBusy: Bool { current.map { running[$0.sessionId] != nil } ?? false }
+
+    /// The newest answer in the shown session, on one line (the finished card shows it).
+    var lastReply: String? {
+        guard let cur = current, let l = lines[cur.sessionId]?.last(where: { !$0.isUser && $0.tool == nil }) else { return nil }
+        let t = DiffEngine.toOneLine(l.text)
+        return t.isEmpty ? nil : t
+    }
+
+    /// Opens the Claude chat page: the transcript is read first, so the island grows once, straight to its size.
+    func openChat() async {
+        await reload()
+        let state = AppState.shared
+        state.claudeChat = true
+        withAnimation(.easeInOut(duration: 0.2)) { state.view = .prompt }
+    }
+
+    /// The stop button: ends the `claude -p` run this app started for the shown session (its termination handler clears `running`).
+    func stop() { current.flatMap { running[$0.sessionId] }?.terminate() }
 
     /// A rough height of the current session's feed (the last 120 lines): how many rows each message wraps to,
     /// plus one row for a run of tool steps. The island uses it to open as far as the conversation needs.

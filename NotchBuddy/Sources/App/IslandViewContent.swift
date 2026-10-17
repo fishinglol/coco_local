@@ -568,8 +568,16 @@ struct ErrorView: View {
 struct FinishedView: View {
     @ObservedObject var state: AppState
 
+    #if !APPSTORE
+    @ObservedObject private var claude = ClaudeSessionRunner.shared
+    private var isClaude: Bool { state.finishedNote == nil && state.focusTask?.id == "agent_claude" }
+    #endif
+
     private var finishedText: String {
         if let note = state.finishedNote { return note.text }
+        #if !APPSTORE
+        if isClaude, let r = claude.lastReply { return r }
+        #endif
         if let fl = state.focusTask?.finalLine { return fl }
         if let s = state.focusTask?.steps.last(where: { !$0.isDiffStep }) { return s }
         return String(localized: "Session finished")
@@ -582,7 +590,11 @@ struct FinishedView: View {
                 if let note = state.finishedNote {
                     AgentWho(task: nil, label: "\(note.who) replied")
                 } else {
+                    #if !APPSTORE
+                    AgentWho(task: state.focusTask, label: isClaude ? (claude.current.map { URL(fileURLWithPath: $0.cwd).lastPathComponent } ?? "finished") : "Claude Code finished")
+                    #else
                     AgentWho(task: state.focusTask, label: "Claude Code finished")
+                    #endif
                 }
                 Text(finishedText)
                     .font(.system(size: 15, weight: .semibold))
@@ -590,7 +602,11 @@ struct FinishedView: View {
                     .truncationMode(.tail)
                 HStack(spacing: 8) {
                     #if !APPSTORE
-                    if state.finishedNote == nil {
+                    if isClaude {
+                        PrimaryButton("Open chat") {
+                            Task { await ClaudeSessionRunner.shared.openChat() }
+                        }
+                    } else if state.finishedNote == nil {
                     PrimaryButton("Open terminal") {
                         let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
                         let activated = terminalBundleIds.compactMap { id in
@@ -613,6 +629,9 @@ struct FinishedView: View {
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        #if !APPSTORE
+        .task { if isClaude { await claude.reload() } }
+        #endif
     }
 }
 
@@ -4854,6 +4873,7 @@ struct ClaudeCodeChatView: View {
     @ObservedObject private var state = AppState.shared
     @State private var note = ""
     @State private var commands: [GatewayCommand] = []
+    @State private var shown = false
 
     /// A file dropped on the island / a window Mochi was dropped on: goes along with the next message, like in the Colony chat.
     private var pendingFile: (name: String, url: URL)? {
@@ -5031,7 +5051,11 @@ struct ClaudeCodeChatView: View {
             .padding(.top, 10).padding(.bottom, 14)
         }
         .padding(.bottom, 10)
-        .onAppear { commands = Self.loadCommands(cwd: runner.current?.cwd) }
+        .opacity(shown ? 1 : 0)
+        .onAppear {
+            commands = Self.loadCommands(cwd: runner.current?.cwd)
+            withAnimation(.easeOut(duration: 0.22).delay(0.1)) { shown = true }
+        }
         .task {     // the transcript is the truth: it also holds what was typed in the window and the in-between text
             while !Task.isCancelled {
                 await runner.reload()
@@ -5125,7 +5149,8 @@ struct ClaudeCodeChatView: View {
             if let f = pendingFile { chip("paperclip", f.name) }
             if let w = pendingWindow { chip("macwindow", w.title.isEmpty ? w.app : "\(w.app) · \(w.title)") }
             ColonyComposer(placeholder: "Message Claude Code…", commands: commands,
-                           canSend: runner.current != nil, onSend: send)
+                           canSend: runner.current != nil, onSend: send,
+                           busy: runner.isBusy, onStop: runner.stop)
         }
     }
 

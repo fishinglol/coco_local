@@ -31,6 +31,8 @@ struct IslandContainer: View {
     @State private var greetNotif: Bool = false
     @State private var lastMode: IslandMode = .compact
 
+    /// No overshoot: the Claude chat is tall, a bounce reads as the page tearing.
+    static let claudeSpring = Animation.spring(response: 0.42, dampingFraction: 1.0)
     private let openSpring = Animation.spring(response: 0.5, dampingFraction: 0.72)
     private let closeEase  = Animation.timingCurve(0.45, 0, 0.2, 1, duration: 0.34)
 
@@ -157,7 +159,7 @@ struct IslandContainer: View {
             let (w, h) = islandSize(mode: .expanded, view: newView,
                                     progress: state.uploadProgress,
                                     nw: state.notchWidth, nh: state.notchHeight)
-            withAnimation(openSpring) {
+            withAnimation(newView == .prompt && state.claudeChat ? Self.claudeSpring : openSpring) {
                 islandWidth  = w
                 islandHeight = newView == .prompt ? chatPromptHeight : h
             }
@@ -175,7 +177,7 @@ struct IslandContainer: View {
             DispatchQueue.main.async {
                 guard state.mode == .expanded, state.view == .prompt, state.claudeChat else { return }
                 let h = chatPromptHeight
-                if h != islandHeight { withAnimation(openSpring) { islandHeight = h } }
+                if h != islandHeight { withAnimation(Self.claudeSpring) { islandHeight = h } }
             }
         }
         #endif
